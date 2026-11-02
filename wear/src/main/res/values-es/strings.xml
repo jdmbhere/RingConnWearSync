@@ -153,6 +153,7 @@
     <string name="status_fatigue">Fatiga</string>
     <string name="rhythm_and_rest">Ritmo y Reposo</string>
     <string name="daily_range">Rango Diario</string>
+    <string name="daily_range_pending">Esperando las lecturas de hoy</string>
     <string name="avg_resting_hr_short">Reposo</string>
     <string name="avg_resting_hr">FC Reposo Media</string>
     <string name="variation">Variación</string>

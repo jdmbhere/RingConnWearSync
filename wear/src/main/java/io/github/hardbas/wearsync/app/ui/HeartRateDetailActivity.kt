@@ -58,6 +58,7 @@ import androidx.wear.compose.material.*
 import com.google.android.gms.wearable.Wearable
 import io.github.hardbas.wearsync.app.R
 import io.github.hardbas.wearsync.app.complication.RingConnComplicationProvider
+import io.github.hardbas.wearsync.app.data.DailyHrRange
 import io.github.hardbas.wearsync.app.data.RingConnHistoryStore
 import io.github.hardbas.wearsync.app.data.RingConnVitals
 import io.github.hardbas.wearsync.app.service.WearDataListenerService
@@ -153,13 +154,9 @@ fun HeartRateDetailScreen(context: Context, startMeasureDirectly: Boolean = fals
             delay(3500L)
             val current = RingConnComplicationProvider.getLatestVitals(context)
             if (current.lastHeartRate > 0) {
-                val newHr = current.lastHeartRate
-                val newMin = if (current.minHeartRate > 0) minOf(current.minHeartRate, newHr) else newHr
-                val newMax = if (current.maxHeartRate > 0) maxOf(current.maxHeartRate, newHr) else newHr
+                // The day's range is widened by the save funnel from every reading
+                // it receives, so this path only reports the reading it has.
                 val updated = current.copy(
-                    lastHeartRate = newHr,
-                    minHeartRate = newMin,
-                    maxHeartRate = newMax,
                     refreshTimestamp = System.currentTimeMillis() / 1000L
                 )
                 RingConnComplicationProvider.saveAndBroadcastVitals(context, updated)
@@ -195,13 +192,9 @@ fun HeartRateDetailScreen(context: Context, startMeasureDirectly: Boolean = fals
                     }
                     val current = RingConnComplicationProvider.getLatestVitals(context)
                     if (current.lastHeartRate > 0) {
-                        val newHr = current.lastHeartRate
-                        val newMin = if (current.minHeartRate > 0) minOf(current.minHeartRate, newHr) else newHr
-                        val newMax = if (current.maxHeartRate > 0) maxOf(current.maxHeartRate, newHr) else newHr
+                        // Same rule as above: the reading travels, the funnel widens
+                        // the day's range with it.
                         val updated = current.copy(
-                            lastHeartRate = newHr,
-                            minHeartRate = newMin,
-                            maxHeartRate = newMax,
                             refreshTimestamp = System.currentTimeMillis() / 1000L
                         )
                         RingConnComplicationProvider.saveAndBroadcastVitals(context, updated)
@@ -240,7 +233,10 @@ fun HeartRateDetailContent(
     val avgHr = vitals.avgHeartRate
     val minHr = vitals.minHeartRate
     val maxHr = vitals.maxHeartRate
-    val hasMinMax = minHr > 0 && maxHr > 0
+    // The model, not three loose numbers: null is a position that was never
+    // measured, so the bar has nothing to draw until the day has a range.
+    val range = DailyHrRange(minHr, maxHr)
+    val rangeFill = range.positionOf(currentHr)
     val minHrText = if (minHr > 0) stringResource(R.string.min_hr_format, minHr) else "--"
     val maxHrText = if (maxHr > 0) stringResource(R.string.max_hr_format, maxHr) else "--"
 
@@ -501,7 +497,7 @@ fun HeartRateDetailContent(
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
-                                    text = if (hasMinMax) "$minHr - $maxHr" else "--",
+                                    text = if (range.isKnown) "$minHr - $maxHr" else "--",
                                     fontSize = TextCaption,
                                     style = TabularNums,
                                     color = HrMinMaxPink,
@@ -515,7 +511,11 @@ fun HeartRateDetailContent(
 
                         Row(verticalAlignment = Alignment.Bottom) {
                             Text(
-                                text = if (hasMinMax) "$minHr - $maxHr" else hrDisplay,
+                                // The range is the day's min and max. When the day
+                                // has none, the current reading is not a range, so
+                                // it stays out of this line instead of standing in
+                                // for one.
+                                text = if (range.isKnown) "$minHr - $maxHr" else "--",
                                 fontSize = TextBig,
                                 style = TabularNums,
                                 color = Color.White,
@@ -533,24 +533,34 @@ fun HeartRateDetailContent(
 
                         Spacer(modifier = Modifier.height(8.dp))
 
-                        AnimatedMinMaxBar(
-                            progress = if (hasMinMax && maxHr > minHr && hasHr) {
-                                ((currentHr - minHr).toFloat() / (maxHr - minHr).toFloat()).coerceIn(0.05f, 1f)
-                            } else if (hasHr) 0.65f else 0f,
-                            color = HrMinMaxPink,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(6.5.dp)
-                        )
+                        if (range.isKnown) {
+                            if (rangeFill != null) {
+                                AnimatedMinMaxBar(
+                                    progress = rangeFill,
+                                    color = HrMinMaxPink,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(6.5.dp)
+                                )
 
-                        Spacer(modifier = Modifier.height(8.dp))
+                                Spacer(modifier = Modifier.height(8.dp))
+                            }
 
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(minHrText, fontSize = TextCaption, style = TabularNums, color = LabelSilver)
-                            Text(maxHrText, fontSize = TextCaption, style = TabularNums, color = LabelSilver)
+                            // One reading is a range with no span: print the ends,
+                            // draw no marker, and claim nothing else.
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(minHrText, fontSize = TextCaption, style = TabularNums, color = LabelSilver)
+                                Text(maxHrText, fontSize = TextCaption, style = TabularNums, color = LabelSilver)
+                            }
+                        } else {
+                            Text(
+                                text = stringResource(R.string.daily_range_pending),
+                                fontSize = TextCaption,
+                                color = LabelSilver
+                            )
                         }
                     }
                 }
@@ -1444,7 +1454,12 @@ private fun PulsingHeartIcon(
 }
 
 /**
- * Min-Max progress bar animated via Canvas draw phase.
+ * The day's range as a track, with a fill marking where the latest reading sits.
+ *
+ * Read-only on purpose: the bar reports what the ring measured, so there is
+ * nothing here for a tap or a drag to change. The previous version let the
+ * finger move the fill and threw it away after 2.5 s, which read as a slider
+ * that answered to nothing the watch knew.
  */
 @Composable
 private fun AnimatedMinMaxBar(
@@ -1453,15 +1468,6 @@ private fun AnimatedMinMaxBar(
     modifier: Modifier = Modifier
 ) {
     val anim = remember { Animatable(0f) }
-    var scrubPos by remember { mutableStateOf<Float?>(null) }
-    val haptic = LocalHapticFeedback.current
-
-    LaunchedEffect(scrubPos) {
-        if (scrubPos != null) {
-            delay(2500L)
-            scrubPos = null
-        }
-    }
 
     LaunchedEffect(progress) {
         anim.animateTo(
@@ -1473,54 +1479,15 @@ private fun AnimatedMinMaxBar(
         )
     }
 
-    Canvas(
-        modifier = modifier
-            .pointerInput(Unit) {
-                detectTapGestures { offset ->
-                    val frac = (offset.x / size.width.toFloat()).coerceIn(0f, 1f)
-                    scrubPos = frac
-                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                }
-            }
-            .pointerInput(Unit) {
-                detectHorizontalDragGestures(
-                    onDragStart = { offset ->
-                        val frac = (offset.x / size.width.toFloat()).coerceIn(0f, 1f)
-                        scrubPos = frac
-                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                    },
-                    onHorizontalDrag = { change, _ ->
-                        change.consume()
-                        val frac = (change.position.x / size.width.toFloat()).coerceIn(0f, 1f)
-                        val prevStep = (scrubPos?.times(20))?.toInt()
-                        val curStep = (frac * 20).toInt()
-                        if (prevStep != curStep) {
-                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        }
-                        scrubPos = frac
-                    }
-                )
-            }
-    ) {
+    Canvas(modifier = modifier) {
         val corner = CornerRadius(size.height / 2f, size.height / 2f)
         drawRoundRect(color = GlassBlack50, size = size, cornerRadius = corner)
-        val barW = size.width * (scrubPos ?: anim.value)
-        if (barW > 0f) {
-            drawRoundRect(color = color, size = Size(barW, size.height), cornerRadius = corner)
-        }
-        if (scrubPos != null) {
-            val cx = size.width * scrubPos!!
-            drawCircle(
-                color = Color.White,
-                radius = size.height / 2f + 2.dp.toPx(),
-                center = Offset(cx, size.height / 2f)
-            )
-            drawCircle(
-                color = color,
-                radius = size.height / 2f,
-                center = Offset(cx, size.height / 2f)
-            )
-        }
+        // A rounded fill of zero width would be invisible, so the minimum mark is
+        // one cap wide: the reading at the very bottom of the range still shows
+        // where it is instead of looking like an empty bar.
+        val barW = (size.width * anim.value.coerceIn(0f, 1f)).coerceAtLeast(size.height)
+            .coerceAtMost(size.width)
+        drawRoundRect(color = color, size = Size(barW, size.height), cornerRadius = corner)
     }
 }
 

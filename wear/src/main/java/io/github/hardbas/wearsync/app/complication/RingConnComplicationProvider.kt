@@ -24,6 +24,7 @@ import androidx.wear.watchface.complications.datasource.ComplicationDataSourceUp
 import androidx.wear.watchface.complications.datasource.ComplicationRequest
 import androidx.wear.watchface.complications.datasource.SuspendingComplicationDataSourceService
 import io.github.hardbas.wearsync.app.R
+import io.github.hardbas.wearsync.app.data.DailyHrRange
 import io.github.hardbas.wearsync.app.data.RingConnHistoryStore
 import io.github.hardbas.wearsync.app.data.RingConnVitals
 import io.github.hardbas.wearsync.app.tile.DailySummaryTileService
@@ -386,13 +387,26 @@ class RingConnComplicationProvider : SuspendingComplicationDataSourceService() {
             io.github.hardbas.wearsync.app.service.WearDataListenerService.parseVitalsFromJson(json)
 
         fun saveAndBroadcastVitals(context: Context, vitals: RingConnVitals) {
-            val contentSignature = computeContentSignature(vitals)
-            val isDuplicate = (lastBroadcastSignature != null && lastBroadcastSignature == contentSignature)
-            lastBroadcastSignature = contentSignature
-
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             val todayEpochDay = java.time.LocalDate.now(java.time.ZoneId.systemDefault()).toEpochDay()
             ensureDailyRollover(prefs, todayEpochDay)
+
+            // Today's range is the union of what the phone reported, what the day
+            // already holds and the reading in hand. The widget scrape carries no
+            // range of its own, so without this the card loses its range for as
+            // long as Health Connect stays silent. Rollover has already emptied
+            // the stored values, which is what keeps yesterday out of today.
+            val dayRange = DailyHrRange.widen(
+                DailyHrRange(prefs.getInt("min_hr", 0), prefs.getInt("max_hr", 0)),
+                DailyHrRange(vitals.minHeartRate, vitals.maxHeartRate),
+                DailyHrRange.observed(vitals.lastHeartRate, vitals.refreshTimestamp, todayEpochDay)
+            )
+            val merged = vitals.copy(minHeartRate = dayRange.min, maxHeartRate = dayRange.max)
+
+            val contentSignature = computeContentSignature(merged)
+            val isDuplicate = (lastBroadcastSignature != null && lastBroadcastSignature == contentSignature)
+            lastBroadcastSignature = contentSignature
+
             prefs.edit().apply {
                 putLong(KEY_CACHE_EPOCH_DAY, todayEpochDay)
                 putInt("hr_last", vitals.lastHeartRate)
@@ -413,8 +427,8 @@ class RingConnComplicationProvider : SuspendingComplicationDataSourceService() {
                 putBoolean("is_charging", vitals.isCharging)
                 putBoolean("is_connected", vitals.isConnected)
                 putLong("timestamp", vitals.refreshTimestamp)
-                putInt("min_hr", vitals.minHeartRate)
-                putInt("max_hr", vitals.maxHeartRate)
+                putInt("min_hr", merged.minHeartRate)
+                putInt("max_hr", merged.maxHeartRate)
                 putInt("zone1_mins", vitals.zone1Mins)
                 putInt("zone2_mins", vitals.zone2Mins)
                 putInt("zone3_mins", vitals.zone3Mins)
@@ -460,7 +474,7 @@ class RingConnComplicationProvider : SuspendingComplicationDataSourceService() {
             }
 
             try {
-                RingConnHistoryStore.recordDailySnapshot(context, vitals)
+                RingConnHistoryStore.recordDailySnapshot(context, merged)
             } catch (e: Exception) {
                 Log.e("RingConnComplication", "Failed to record daily history snapshot", e)
             }

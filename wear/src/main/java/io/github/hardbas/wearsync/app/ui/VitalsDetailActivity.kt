@@ -52,6 +52,7 @@ import kotlin.coroutines.resume
 import kotlinx.coroutines.suspendCancellableCoroutine
 import io.github.hardbas.wearsync.app.R
 import io.github.hardbas.wearsync.app.complication.RingConnComplicationProvider
+import io.github.hardbas.wearsync.app.data.DailyHrRange
 import io.github.hardbas.wearsync.app.data.MeasureOutcome
 import io.github.hardbas.wearsync.app.data.RingConnVitals
 import io.github.hardbas.wearsync.app.service.WearDataListenerService
@@ -245,12 +246,15 @@ fun VitalsDetailContent(
         label = "hrAnim"
     )
     val hrDisplay = if (hasHr) "$animatedHr" else "--"
-    val hasMinMax = vitals.minHeartRate > 0 && vitals.maxHeartRate > 0
-    val minHr = if (hasMinMax) vitals.minHeartRate else (if (currentHr > 0) currentHr else 0)
-    val maxHr = if (hasMinMax) vitals.maxHeartRate else (if (currentHr > 0) currentHr else 0)
+    // The same model the heart-rate screen uses: a missing end stays missing
+    // instead of borrowing the current reading and calling it a range.
+    val range = DailyHrRange(vitals.minHeartRate, vitals.maxHeartRate)
+    val rangeFill = range.positionOf(currentHr)
+    val minHr = range.min
+    val maxHr = range.max
 
-    val minHrText = if (hasMinMax) stringResource(R.string.min_hr_format, minHr) else stringResource(R.string.min_hr_format, if (hasHr) currentHr else 0)
-    val maxHrText = if (hasMinMax) stringResource(R.string.max_hr_format, maxHr) else stringResource(R.string.max_hr_format, if (hasHr) currentHr else 0)
+    val minHrText = if (range.min > 0) stringResource(R.string.min_hr_format, range.min) else "--"
+    val maxHrText = if (range.max > 0) stringResource(R.string.max_hr_format, range.max) else "--"
 
     val hrStatusLabel = when {
         !hasHr -> "--"
@@ -551,7 +555,7 @@ fun VitalsDetailContent(
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
-                                    text = if (hasMinMax) "$minHr - $maxHr" else "--",
+                                    text = if (range.isKnown) "$minHr - $maxHr" else "--",
                                     fontSize = TextCaption,
                                     style = TabularNums,
                                     color = HrMinMaxPink,
@@ -565,7 +569,7 @@ fun VitalsDetailContent(
 
                         Row(verticalAlignment = Alignment.Bottom) {
                             Text(
-                                text = if (hasMinMax) "$minHr - $maxHr" else hrDisplay,
+                                text = if (range.isKnown) "$minHr - $maxHr" else "--",
                                 fontSize = TextBig,
                                 style = TabularNums,
                                 color = Color.White,
@@ -583,24 +587,32 @@ fun VitalsDetailContent(
 
                         Spacer(modifier = Modifier.height(8.dp))
 
-                        AnimatedMinMaxBar(
-                            progress = if (hasMinMax && maxHr > minHr && hasHr) {
-                                ((currentHr - minHr).toFloat() / (maxHr - minHr).toFloat()).coerceIn(0.05f, 1f)
-                            } else if (hasHr) 0.65f else 0f,
-                            color = HrMinMaxPink,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(6.5.dp)
-                        )
+                        if (range.isKnown) {
+                            if (rangeFill != null) {
+                                AnimatedMinMaxBar(
+                                    progress = rangeFill,
+                                    color = HrMinMaxPink,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(6.5.dp)
+                                )
 
-                        Spacer(modifier = Modifier.height(8.dp))
+                                Spacer(modifier = Modifier.height(8.dp))
+                            }
 
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(minHrText, fontSize = TextCaption, style = TabularNums, color = LabelSilver)
-                            Text(maxHrText, fontSize = TextCaption, style = TabularNums, color = LabelSilver)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(minHrText, fontSize = TextCaption, style = TabularNums, color = LabelSilver)
+                                Text(maxHrText, fontSize = TextCaption, style = TabularNums, color = LabelSilver)
+                            }
+                        } else {
+                            Text(
+                                text = stringResource(R.string.daily_range_pending),
+                                fontSize = TextCaption,
+                                color = LabelSilver
+                            )
                         }
                     }
                 }
@@ -1187,10 +1199,11 @@ private fun AnimatedMinMaxBar(
     Canvas(modifier = modifier) {
         val corner = CornerRadius(size.height / 2f, size.height / 2f)
         drawRoundRect(color = Color(0x33FFFFFF), size = size, cornerRadius = corner)
-        val barW = size.width * anim.value
-        if (barW > 0f) {
-            drawRoundRect(color = color, size = Size(barW, size.height), cornerRadius = corner)
-        }
+        // A fill of zero width would be invisible, so the smallest mark is one cap
+        // wide: a reading at the very bottom of the range still shows where it is.
+        val barW = (size.width * anim.value.coerceIn(0f, 1f)).coerceAtLeast(size.height)
+            .coerceAtMost(size.width)
+        drawRoundRect(color = color, size = Size(barW, size.height), cornerRadius = corner)
     }
 }
 

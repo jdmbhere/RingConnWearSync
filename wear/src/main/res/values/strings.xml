@@ -152,6 +152,7 @@
     <string name="status_fatigue">Fatigue</string>
     <string name="rhythm_and_rest">Rhythm &amp; Rest</string>
     <string name="daily_range">Daily Range</string>
+    <string name="daily_range_pending">Waiting for today\'s readings</string>
     <string name="avg_resting_hr">Avg Resting HR</string>
     <string name="avg_resting_hr_short">Avg Rest</string>
     <string name="variation">Variation</string>
