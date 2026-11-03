@@ -1,5 +1,6 @@
 package io.github.hardbas.wearsync.bridge.service
 
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -8,26 +9,36 @@ import org.junit.Test
  *
  * A record type can be queried all it likes, but if its read permission is not in the
  * requested set the grant screen never shows it, `getGrantedPermissions()` never returns it,
- * and the query silently answers "no data" forever. That is how `RespiratoryRateRecord`,
- * `DistanceRecord` and `BasalMetabolicRateRecord` went unused while the reader substituted
- * formulas for them, so the wiring is pinned here.
+ * and the query silently answers "no data" forever. That is how `RespiratoryRateRecord` went
+ * unused while the reader substituted a formula for it.
+ *
+ * The opposite mistake is asking for a source nobody consumes: `DistanceRecord` and
+ * `BasalMetabolicRateRecord` have no measured consumer on this watch — the ring writes no
+ * distance at all and its basal record carries an interval amount in a per-day field — so
+ * they were withdrawn instead of leaving an unused grant on the screen.
  */
 class HealthPermissionRequestTest {
 
     @Test
-    fun theThreeRingRecordPermissionsAreRequested() {
+    fun theRingRespiratoryPermissionIsRequested() {
         val requested = RingConnTelemetryReader.REQUESTED_HEALTH_PERMISSIONS
 
         assertTrue(
             "respiratory rate must be requested, or its record is unreadable",
             "android.permission.health.READ_RESPIRATORY_RATE" in requested
         )
-        assertTrue(
-            "distance must be requested, or its record is unreadable",
+    }
+
+    @Test
+    fun theTwoWithdrawnSourcesAreNoLongerRequested() {
+        val requested = RingConnTelemetryReader.REQUESTED_HEALTH_PERMISSIONS
+
+        assertFalse(
+            "the ring writes no distance record, so its grant must not be requested",
             "android.permission.health.READ_DISTANCE" in requested
         )
-        assertTrue(
-            "basal metabolic rate must be requested, or its record is unreadable",
+        assertFalse(
+            "the ring's basal amount is not a rate, so its grant must not be requested",
             "android.permission.health.READ_BASAL_METABOLIC_RATE" in requested
         )
     }

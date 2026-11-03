@@ -36,13 +36,6 @@ object MeasuredVitalsPolicy {
     private const val MAX_COMPUTED_SCORE = 98
 
     /**
-     * Range of a believable basal rate. Below it is an interval amount read as a rate; above
-     * it is not a resting metabolism.
-     */
-    private const val MIN_BASAL = 800
-    private const val MAX_BASAL = 3500
-
-    /**
      * The mean heart rate measured inside one sleep stage, unchanged.
      *
      * There is deliberately no anchor parameter: an offset from a nightly reference is
@@ -105,26 +98,12 @@ object MeasuredVitalsPolicy {
     }
 
     /**
-     * A resting rate that could belong to a person, in kcal per day.
-     *
-     * The ring writes one basal record every half hour carrying the energy it attributes to
-     * that interval, about thirty-six kcal, into a type whose field is defined as a rate per
-     * day. Read literally the record claims the wearer burns thirty-six kcal in a day, which
-     * is not a person. Publishing that because it happens to be a measurement would be the
-     * same failure as the arithmetic this object replaced, so an impossible rate stays
-     * unknown instead.
-     */
-    fun basalRatePlausible(kcalPerDay: Int): Boolean = kcalPerDay in MIN_BASAL..MAX_BASAL
-
-    /**
-     *
-     * The records this rule added — distance, basal metabolic rate, respiratory rate — are
-     * exactly the ones another writer in Health Connect also produces: the handset counts
-     * distance on its own, and a competing health app estimates a basal rate. Taking the
-     * ring's samples and then falling back to whoever else wrote the type prints a
-     * stranger's number on a card the wearer reads as the ring's, which is the same
-     * substitution this object exists to remove. So the filter is strict, and an empty
-     * answer is the honest one because the caller renders it as unknown.
+     * The records this rule reads — the respiratory rate — are exactly the ones another
+     * writer in Health Connect also produces. Taking the ring's samples and then falling
+     * back to whoever else wrote the type prints a stranger's number on a card the wearer
+     * reads as the ring's, which is the same substitution this object exists to remove. So
+     * the filter is strict, and an empty answer is the honest one because the caller renders
+     * it as unknown.
      */
     fun <T> ringSamples(records: List<T>, isRingOrigin: (T) -> Boolean): List<T> =
         records.filter(isRingOrigin)

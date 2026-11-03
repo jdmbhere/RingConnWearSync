@@ -114,14 +114,13 @@ class MeasuredVitalsPolicyTest {
 
     @Test
     fun onlyTheRingSampleSurvivesEvenWhenAnotherWriterAlsoRecordedTheType() {
-        // Distance and basal rate are exactly the types a handset and a competing app also
-        // write, so this is where a fallback would print a stranger's number on the ring's
-        // card without anyone noticing.
-        val records = listOf("com.gdjztech.ringconn" to 5.2, "android" to 9.8)
+        // Respiratory rate is a type a competing health app also writes, so this is where a
+        // fallback would print a stranger's number on the ring's card without anyone noticing.
+        val records = listOf("com.gdjztech.ringconn" to 16.2, "android" to 12.8)
 
         val ringOnly = MeasuredVitalsPolicy.ringSamples(records) { it.first == RINGCONN }
 
-        assertEquals(listOf(RINGCONN to 5.2), ringOnly)
+        assertEquals(listOf(RINGCONN to 16.2), ringOnly)
     }
 
     @Test
@@ -139,25 +138,6 @@ class MeasuredVitalsPolicyTest {
     @Test
     fun noRecordsAtAllStaysUnknown() {
         assertTrue(MeasuredVitalsPolicy.ringSamples(emptyList<String>()) { it == RINGCONN }.isEmpty())
-    }
-
-    @Test
-    fun theRingsHalfHourlyBasalAmountIsNotAPersonAndStaysUnknown() {
-        // Observed on device: the ring writes 36 kcal every half hour into a field defined as
-        // a daily rate. 48 x 36 = 1728, so 36 is an interval amount wearing the wrong unit.
-        assertTrue(
-            "36 kcal/day cannot be a resting metabolism, so it must not reach the watch",
-            !MeasuredVitalsPolicy.basalRatePlausible(36)
-        )
-        assertTrue(!MeasuredVitalsPolicy.basalRatePlausible(0))
-        assertTrue(!MeasuredVitalsPolicy.basalRatePlausible(5000))
-    }
-
-    @Test
-    fun aBasalRateAPersonCouldHaveSurvives() {
-        assertTrue(MeasuredVitalsPolicy.basalRatePlausible(1728))
-        assertTrue(MeasuredVitalsPolicy.basalRatePlausible(800))
-        assertTrue(MeasuredVitalsPolicy.basalRatePlausible(3500))
     }
 
     private companion object {

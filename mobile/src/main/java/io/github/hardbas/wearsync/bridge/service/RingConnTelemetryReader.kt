@@ -7,8 +7,6 @@ import android.util.Log
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.HeartRateRecord
-import androidx.health.connect.client.records.BasalMetabolicRateRecord
-import androidx.health.connect.client.records.DistanceRecord
 import androidx.health.connect.client.records.HeartRateVariabilityRmssdRecord
 import androidx.health.connect.client.records.OxygenSaturationRecord
 import androidx.health.connect.client.records.RespiratoryRateRecord
@@ -120,10 +118,11 @@ object RingConnTelemetryReader {
         HealthPermission.getReadPermission(RestingHeartRateRecord::class),
         HealthPermission.getReadPermission(HeartRateVariabilityRmssdRecord::class),
         HealthPermission.getReadPermission(TotalCaloriesBurnedRecord::class),
-        // The ring publishes these three, so the fields they feed no longer need arithmetic.
-        HealthPermission.getReadPermission(RespiratoryRateRecord::class),
-        HealthPermission.getReadPermission(DistanceRecord::class),
-        HealthPermission.getReadPermission(BasalMetabolicRateRecord::class)
+        // The ring publishes a respiratory rate, so the field no longer needs arithmetic.
+        // Distance and basal rate were withdrawn: the ring writes no distance record at all,
+        // and its basal record carries a half-hour amount in a per-day field, so no record
+        // of either type could ever be published as a measurement on this watch.
+        HealthPermission.getReadPermission(RespiratoryRateRecord::class)
     )
 
     val REQUESTED_HEALTH_PERMISSIONS: Set<String> = CORE_HEALTH_PERMISSIONS + PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND
@@ -322,36 +321,6 @@ object RingConnTelemetryReader {
             } else null
         }
 
-        val distanceDeferred = async {
-            if (granted.contains(HealthPermission.getReadPermission(DistanceRecord::class))) {
-                try {
-                    client.readAllPages(
-                        recordType = DistanceRecord::class,
-                        timeRange = TimeRangeFilter.between(todayStart, now)
-                    )
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed querying DistanceRecord: ${e.message}")
-                    null
-                }
-            } else null
-        }
-
-        val bmrDeferred = async {
-            if (granted.contains(HealthPermission.getReadPermission(BasalMetabolicRateRecord::class))) {
-                try {
-                    client.readRecords(
-                        ReadRecordsRequest(
-                            recordType = BasalMetabolicRateRecord::class,
-                            timeRangeFilter = TimeRangeFilter.between(queryStart, now)
-                        )
-                    )
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed querying BasalMetabolicRateRecord: ${e.message}")
-                    null
-                }
-            } else null
-        }
-
         val hrResponse = hrDeferred.await()
         val rhrResponse = rhrDeferred.await()
         val spo2Response = spo2Deferred.await()
@@ -360,8 +329,6 @@ object RingConnTelemetryReader {
         val calResponse = calDeferred.await()
         val sleepResponse = sleepDeferred.await()
         val respiratoryResponse = respiratoryDeferred.await()
-        val distanceResponse = distanceDeferred.await()
-        val bmrResponse = bmrDeferred.await()
 
         var hasRingConnOrigin = false
         var lastBpm = 0
@@ -526,53 +493,11 @@ object RingConnTelemetryReader {
             }
         }
 
-        // 5b. Distance, Basal Metabolic Rate and Respiratory Rate (ring origin only)
-        // These three used to be arithmetic: steps × 0.000762 for distance, minutes since
-        // midnight × 1.166 for basal calories, and a pulse/HRV formula for the respiratory
-        // rate. The ring publishes all three, so an absent record stays unknown instead.
-        // Ring origin only, with no fallback: the handset counts distance by itself and a
-        // competing app estimates a basal rate, so accepting whoever wrote the type would
-        // put a stranger's number on the ring's card.
-        var measuredDistanceKm = 0f
-        if (distanceResponse != null) {
-            val ringConnDistance = MeasuredVitalsPolicy.ringSamples(distanceResponse) {
-                it.metadata.dataOrigin.packageName == RINGCONN_PKG
-            }
-            if (ringConnDistance.isNotEmpty()) {
-                hasRingConnOrigin = true
-            }
-            val totalKm = ringConnDistance.sumOf { it.distance.inKilometers }
-            if (totalKm > 0.0) {
-                measuredDistanceKm = ((totalKm * 100.0).roundToInt() / 100.0).toFloat()
-            }
-        }
-
-        var measuredBasalCalories = 0
-        if (bmrResponse != null) {
-            val ringConnBmr = MeasuredVitalsPolicy.ringSamples(bmrResponse.records) {
-                it.metadata.dataOrigin.packageName == RINGCONN_PKG
-            }
-            if (ringConnBmr.isNotEmpty()) {
-                hasRingConnOrigin = true
-            }
-            // The ring writes one basal record every half hour carrying the energy of that
-            // interval (~36 kcal) into a field defined as a rate per day. Read literally the
-            // record says the wearer burns 36 kcal a day, so the rate has to pass a sanity
-            // gate before it is published as a measurement.
-            ringConnBmr.maxByOrNull { it.time }?.let {
-                val kcalPerDay = it.basalMetabolicRate.inKilocaloriesPerDay.roundToInt()
-                if (MeasuredVitalsPolicy.basalRatePlausible(kcalPerDay)) {
-                    measuredBasalCalories = kcalPerDay
-                } else {
-                    Log.w(
-                        TAG,
-                        "Ignoring implausible ring basal rate: $kcalPerDay kcal/day " +
-                            "(${ringConnBmr.size} ring records today)"
-                    )
-                }
-            }
-        }
-
+        // 5b. Respiratory Rate (ring origin only)
+        // This used to be arithmetic — a pulse/HRV formula — while the ring publishes the
+        // record itself. Ring origin only, with no fallback: an absent record stays unknown.
+        // Distance and basal calories are not read at all: the ring writes no distance, and
+        // its basal record carries a half-hour amount in a per-day field, so both stay 0.
         var measuredRespiratoryRate = 0f
         if (respiratoryResponse != null) {
             val ringConnResp = MeasuredVitalsPolicy.ringSamples(respiratoryResponse.records) {
@@ -758,7 +683,7 @@ object RingConnTelemetryReader {
 
         // Check if we retrieved any real telemetry from Health Connect
         val hasRealTelemetry = lastBpm > 0 || todaySteps > 0 || lastSpo2 > 0 || lastHrv > 0 || sleepScore > 0 ||
-            measuredDistanceKm > 0f || measuredBasalCalories > 0 || measuredRespiratoryRate > 0f
+            measuredRespiratoryRate > 0f
         if (!hasRealTelemetry) {
             Log.d(TAG, "Health Connect permissions granted but 0 records found in range")
             return@coroutineScope null
@@ -1037,11 +962,9 @@ object RingConnTelemetryReader {
         val finalStressAfternoon = measuredBlockStress(12, 17, 1.08)
         val finalStressNight = measuredBlockStress(18, 23, 0.86)
 
-        // 7. Basal Metabolism BMR + Distance Km + Nocturnal Respiratory Rate (CalorieSyncModel, StepsInfo, SleepSyncModel)
-        // Each comes from its own record now; no substitution fills a missing one. The cache
-        // only carries a value an earlier read measured, and never outranks a fresh record.
-        val finalBasalCalories = if (measuredBasalCalories > 0) measuredBasalCalories else existing.basalCalories
-        val finalDistanceKm = if (measuredDistanceKm > 0f) measuredDistanceKm else existing.distanceKm
+        // 7. Nocturnal Respiratory Rate (SleepSyncModel)
+        // It comes from its own record; no substitution fills a missing one. The cache only
+        // carries a value an earlier read measured, and never outranks a fresh record.
         val finalRespiratoryRate = if (measuredRespiratoryRate > 0f) measuredRespiratoryRate else existing.respiratoryRate
 
         val vitals = RingConnVitals(
@@ -1094,8 +1017,10 @@ object RingConnTelemetryReader {
             stressMorning = finalStressMorning,
             stressAfternoon = finalStressAfternoon,
             stressNight = finalStressNight,
-            basalCalories = finalBasalCalories,
-            distanceKm = finalDistanceKm,
+            // Withdrawn sources: the field stays on the wire and always stays 0, because
+            // neither can carry a measurement on this watch.
+            basalCalories = 0,
+            distanceKm = 0.0f,
             respiratoryRate = finalRespiratoryRate
         )
 
@@ -1414,8 +1339,6 @@ object RingConnTelemetryReader {
             val mergedStressAfternoon = if (curHour >= 12) MeasuredVitalsPolicy.blockStress(hcVitals?.stressAfternoon?.takeIf { it > 0 } ?: cached.stressAfternoon) else 0
             val mergedStressNight = if (curHour >= 18) MeasuredVitalsPolicy.blockStress(hcVitals?.stressNight?.takeIf { it > 0 } ?: cached.stressNight) else 0
 
-            val mergedBasalCal = hcVitals?.basalCalories?.takeIf { it > 0 } ?: cached.basalCalories
-            val mergedDistKm = hcVitals?.distanceKm?.takeIf { it > 0f } ?: cached.distanceKm
             val mergedRespRate = hcVitals?.respiratoryRate?.takeIf { it > 0f } ?: cached.respiratoryRate
 
             val mergedOdi = hcVitals?.odiDropsPerHour?.takeIf { it > 0f } ?: (if (!isWidgetSleepStaleFromYesterday && widgetVitals.odiDropsPerHour > 0f) widgetVitals.odiDropsPerHour else cached.odiDropsPerHour)
@@ -1470,8 +1393,8 @@ object RingConnTelemetryReader {
                 stressMorning = mergedStressMorning,
                 stressAfternoon = mergedStressAfternoon,
                 stressNight = mergedStressNight,
-                basalCalories = mergedBasalCal,
-                distanceKm = mergedDistKm,
+                basalCalories = 0,
+                distanceKm = 0.0f,
                 respiratoryRate = mergedRespRate
             )
             val sourceLabel = if (hcHrIsFresher) "Health Connect (Fresher)" else "Glance Widgets + HC"
@@ -1534,8 +1457,8 @@ object RingConnTelemetryReader {
                 stressMorning = if (hcVitals.stressMorning > 0) hcVitals.stressMorning else cached.stressMorning,
                 stressAfternoon = if (hcVitals.stressAfternoon > 0) hcVitals.stressAfternoon else cached.stressAfternoon,
                 stressNight = if (hcVitals.stressNight > 0) hcVitals.stressNight else cached.stressNight,
-                basalCalories = if (hcVitals.basalCalories > 0) hcVitals.basalCalories else cached.basalCalories,
-                distanceKm = if (hcVitals.distanceKm > 0f) hcVitals.distanceKm else cached.distanceKm,
+                basalCalories = 0,
+                distanceKm = 0.0f,
                 respiratoryRate = if (hcVitals.respiratoryRate > 0f) hcVitals.respiratoryRate else cached.respiratoryRate
             )
             return@coroutineScope finalHcVitals
