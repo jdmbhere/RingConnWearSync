@@ -214,7 +214,7 @@ class RingConnVitalsMergeTest {
         )
 
         // Simulate crossing midnight at 01:10 AM
-        val rolledOver = RingConnTelemetryReader.rolloverVitalsForNewDay(yesterdayVitals, nowHour = 1, nowMinute = 10)
+        val rolledOver = RingConnTelemetryReader.rolloverVitalsForNewDay(yesterdayVitals)
 
         // Instantaneous vitals and battery MUST be preserved
         assertEquals(68, rolledOver.lastHeartRate)
@@ -260,8 +260,9 @@ class RingConnVitalsMergeTest {
         assertEquals(0, rolledOver.zone1Mins)
         assertEquals(0, rolledOver.zone2Mins)
 
-        // Basal calories at 01:10 AM should only reflect today's BMR accrued so far (~120 kcal)
-        assertTrue("Basal calories at 01:10 AM must be reset to today (~120 kcal), got: ${rolledOver.basalCalories}", rolledOver.basalCalories in 100..200)
+        // Basal calories are a record the ring writes, not clock arithmetic: a new day starts
+        // with none until the ring publishes today's rate.
+        assertEquals("A new day starts without measured basal calories", 0, rolledOver.basalCalories)
 
         // Insights from yesterday must be empty
         assertEquals("", rolledOver.sleepInsight)

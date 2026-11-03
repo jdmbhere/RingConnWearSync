@@ -1696,9 +1696,9 @@ private fun ImmuneEarlyWarningCard(vitals: RingConnVitals) {
 
             Text(
                 text = if (isSpanish) {
-                    "Cruza temperatura, HRV, pulso basal y respiración contra tu base de 7 días para anticipar fiebre o fatiga. La respiración es estimada desde pulso y HRV, no medida."
+                    "Cruza temperatura, HRV, pulso basal y respiración contra tu base de 7 días para anticipar fiebre o fatiga. La respiración es la que registra el anillo; si aún no ha enviado ninguna, se muestra --."
                 } else {
-                    "Cross-checks temp, HRV, RHR, and breath rate vs your 7-day baseline to spot early illness or strain. Breath rate is estimated from pulse and HRV, not measured."
+                    "Cross-checks temp, HRV, RHR, and breath rate vs your 7-day baseline to spot early illness or strain. Breath rate is the one the ring recorded; until it sends one, it shows --."
                 },
                 fontSize = 9.sp,
                 color = LabelSilver,

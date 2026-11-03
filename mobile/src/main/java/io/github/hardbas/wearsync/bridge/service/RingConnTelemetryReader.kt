@@ -7,8 +7,11 @@ import android.util.Log
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.HeartRateRecord
+import androidx.health.connect.client.records.BasalMetabolicRateRecord
+import androidx.health.connect.client.records.DistanceRecord
 import androidx.health.connect.client.records.HeartRateVariabilityRmssdRecord
 import androidx.health.connect.client.records.OxygenSaturationRecord
+import androidx.health.connect.client.records.RespiratoryRateRecord
 import androidx.health.connect.client.records.Record
 import androidx.health.connect.client.records.RestingHeartRateRecord
 import androidx.health.connect.client.records.SleepSessionRecord
@@ -99,6 +102,14 @@ object RingConnTelemetryReader {
     const val KEY_PREV_DAY_STEPS = "keyPrevDaySteps"
     const val KEY_PREV_DAY_CALORIE = "keyPrevDayCalorie"
 
+    private const val KEY_VITALS_SCHEMA = "keyVitalsSchema"
+    // Bumped when a persisted value stops being trustworthy. Schema 1 wrote arithmetic
+    // results — nightly anchor offsets, circadian stress multipliers, a sleep score plus
+    // five, minute-of-day calories — into the same keys as measurements, so a stored
+    // value could not be told apart from a reading. Those values are dropped once instead
+    // of being restored as data.
+    private const val VITALS_SCHEMA_VERSION = 2
+
     const val PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND = "android.permission.health.READ_HEALTH_DATA_IN_BACKGROUND"
 
     val CORE_HEALTH_PERMISSIONS = setOf(
@@ -108,7 +119,11 @@ object RingConnTelemetryReader {
         HealthPermission.getReadPermission(SleepSessionRecord::class),
         HealthPermission.getReadPermission(RestingHeartRateRecord::class),
         HealthPermission.getReadPermission(HeartRateVariabilityRmssdRecord::class),
-        HealthPermission.getReadPermission(TotalCaloriesBurnedRecord::class)
+        HealthPermission.getReadPermission(TotalCaloriesBurnedRecord::class),
+        // The ring publishes these three, so the fields they feed no longer need arithmetic.
+        HealthPermission.getReadPermission(RespiratoryRateRecord::class),
+        HealthPermission.getReadPermission(DistanceRecord::class),
+        HealthPermission.getReadPermission(BasalMetabolicRateRecord::class)
     )
 
     val REQUESTED_HEALTH_PERMISSIONS: Set<String> = CORE_HEALTH_PERMISSIONS + PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND
@@ -291,6 +306,52 @@ object RingConnTelemetryReader {
             } else null
         }
 
+        val respiratoryDeferred = async {
+            if (granted.contains(HealthPermission.getReadPermission(RespiratoryRateRecord::class))) {
+                try {
+                    client.readRecords(
+                        ReadRecordsRequest(
+                            recordType = RespiratoryRateRecord::class,
+                            timeRangeFilter = TimeRangeFilter.between(queryStart, now)
+                        )
+                    )
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed querying RespiratoryRateRecord: ${e.message}")
+                    null
+                }
+            } else null
+        }
+
+        val distanceDeferred = async {
+            if (granted.contains(HealthPermission.getReadPermission(DistanceRecord::class))) {
+                try {
+                    client.readAllPages(
+                        recordType = DistanceRecord::class,
+                        timeRange = TimeRangeFilter.between(todayStart, now)
+                    )
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed querying DistanceRecord: ${e.message}")
+                    null
+                }
+            } else null
+        }
+
+        val bmrDeferred = async {
+            if (granted.contains(HealthPermission.getReadPermission(BasalMetabolicRateRecord::class))) {
+                try {
+                    client.readRecords(
+                        ReadRecordsRequest(
+                            recordType = BasalMetabolicRateRecord::class,
+                            timeRangeFilter = TimeRangeFilter.between(queryStart, now)
+                        )
+                    )
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed querying BasalMetabolicRateRecord: ${e.message}")
+                    null
+                }
+            } else null
+        }
+
         val hrResponse = hrDeferred.await()
         val rhrResponse = rhrDeferred.await()
         val spo2Response = spo2Deferred.await()
@@ -298,6 +359,9 @@ object RingConnTelemetryReader {
         val stepsResponse = stepsDeferred.await()
         val calResponse = calDeferred.await()
         val sleepResponse = sleepDeferred.await()
+        val respiratoryResponse = respiratoryDeferred.await()
+        val distanceResponse = distanceDeferred.await()
+        val bmrResponse = bmrDeferred.await()
 
         var hasRingConnOrigin = false
         var lastBpm = 0
@@ -462,6 +526,55 @@ object RingConnTelemetryReader {
             }
         }
 
+        // 5b. Distance, Basal Metabolic Rate and Respiratory Rate (ring origin only)
+        // These three used to be arithmetic: steps × 0.000762 for distance, minutes since
+        // midnight × 1.166 for basal calories, and a pulse/HRV formula for the respiratory
+        // rate. The ring publishes all three, so an absent record stays unknown instead.
+        // Ring origin only, with no fallback: the handset counts distance by itself and a
+        // competing app estimates a basal rate, so accepting whoever wrote the type would
+        // put a stranger's number on the ring's card.
+        var measuredDistanceKm = 0f
+        if (distanceResponse != null) {
+            val ringConnDistance = MeasuredVitalsPolicy.ringSamples(distanceResponse) {
+                it.metadata.dataOrigin.packageName == RINGCONN_PKG
+            }
+            if (ringConnDistance.isNotEmpty()) {
+                hasRingConnOrigin = true
+            }
+            val totalKm = ringConnDistance.sumOf { it.distance.inKilometers }
+            if (totalKm > 0.0) {
+                measuredDistanceKm = ((totalKm * 100.0).roundToInt() / 100.0).toFloat()
+            }
+        }
+
+        var measuredBasalCalories = 0
+        if (bmrResponse != null) {
+            val ringConnBmr = MeasuredVitalsPolicy.ringSamples(bmrResponse.records) {
+                it.metadata.dataOrigin.packageName == RINGCONN_PKG
+            }
+            if (ringConnBmr.isNotEmpty()) {
+                hasRingConnOrigin = true
+            }
+            // The record carries kcal per day, which is what the daily summary adds to
+            // active calories; accruing it by the clock would be arithmetic again.
+            ringConnBmr.maxByOrNull { it.time }?.let {
+                measuredBasalCalories = it.basalMetabolicRate.inKilocaloriesPerDay.roundToInt()
+            }
+        }
+
+        var measuredRespiratoryRate = 0f
+        if (respiratoryResponse != null) {
+            val ringConnResp = MeasuredVitalsPolicy.ringSamples(respiratoryResponse.records) {
+                it.metadata.dataOrigin.packageName == RINGCONN_PKG
+            }
+            if (ringConnResp.isNotEmpty()) {
+                hasRingConnOrigin = true
+            }
+            ringConnResp.maxByOrNull { it.time }?.let {
+                measuredRespiratoryRate = it.rate.toFloat()
+            }
+        }
+
         // 6. Sleep Session & Stages (RingConn writes multiple SleepSessionRecord segments per night)
         var sleepScore = 0
         var deepMins = 0L
@@ -620,18 +733,21 @@ object RingConnTelemetryReader {
 
                     Log.i(TAG, "Health Connect sleep metrics: totalDur=$totalDurationMins m, deep=$deepMins m, rem=$remMins m, light=$lightMins m, awake=$awakeMins m")
 
-                    if (totalDurationMins > 0) {
-                        val durScore = ((totalDurationMins.toDouble() / 450.0).coerceAtMost(1.0) * 55.0)
-                        val deepScore = if (deepMins > 0) ((deepMins.toDouble() / 75.0).coerceAtMost(1.0) * 23.0) else 18.0
-                        val remScore = if (remMins > 0) ((remMins.toDouble() / 85.0).coerceAtMost(1.0) * 22.0) else 17.0
-                        val awakePenalty = (awakeMins.toDouble() / 12.0).coerceAtMost(12.0)
-                        sleepScore = (durScore + deepScore + remScore - awakePenalty).roundToInt().coerceIn(45, 98)
-                    }
+                    // A stage nobody recorded contributes nothing, and a night with no stage
+                    // records has no computed score at all. The old free 18 and 17 points plus
+                    // the 45 floor manufactured a believable score out of an absent night.
+                    sleepScore = MeasuredVitalsPolicy.computedSleepScore(
+                        deepMinutes = deepMins,
+                        remMinutes = remMins,
+                        lightMinutes = lightMins,
+                        awakeMinutes = awakeMins
+                    )
                 }
             }
 
         // Check if we retrieved any real telemetry from Health Connect
-        val hasRealTelemetry = lastBpm > 0 || todaySteps > 0 || lastSpo2 > 0 || lastHrv > 0 || sleepScore > 0
+        val hasRealTelemetry = lastBpm > 0 || todaySteps > 0 || lastSpo2 > 0 || lastHrv > 0 || sleepScore > 0 ||
+            measuredDistanceKm > 0f || measuredBasalCalories > 0 || measuredRespiratoryRate > 0f
         if (!hasRealTelemetry) {
             Log.d(TAG, "Health Connect permissions granted but 0 records found in range")
             return@coroutineScope null
@@ -867,80 +983,55 @@ object RingConnTelemetryReader {
             if (remHrList.isNotEmpty()) computedHrRem = remHrList.map { it.beatsPerMinute }.average().roundToInt()
             if (lightHrList.isNotEmpty()) computedHrLight = lightHrList.map { it.beatsPerMinute }.average().roundToInt()
         }
-        val baseNightHr = when {
-            finalMinHr > 0 -> finalMinHr
-            finalAvgHr > 0 -> (finalAvgHr - 8).coerceIn(46, 75)
-            else -> 56
-        }
-        val hasSleepForPhases = finalSleep > 0 || (finalDeep + finalRem + finalLight) > 0
-        val finalHrPhaseDeep = when {
-            computedHrDeep > 0 -> computedHrDeep
-            existing.hrPhaseDeep > 0 -> existing.hrPhaseDeep
-            hasSleepForPhases -> (baseNightHr + 1).coerceIn(44, 88)
-            else -> 0
-        }
-        val finalHrPhaseLight = when {
-            computedHrLight > 0 -> computedHrLight
-            existing.hrPhaseLight > 0 -> existing.hrPhaseLight
-            hasSleepForPhases -> (baseNightHr + 4).coerceIn(46, 92)
-            else -> 0
-        }
-        val finalHrPhaseRem = when {
-            computedHrRem > 0 -> computedHrRem
-            existing.hrPhaseRem > 0 -> existing.hrPhaseRem
-            hasSleepForPhases -> (baseNightHr + 6).coerceIn(48, 96)
-            else -> 0
-        }
+        // A phase heart rate exists only when samples fell inside that stage. The nightly
+        // anchor plus a fixed offset — and the anchor's own `avg - 8` and literal 56 — were
+        // arithmetic dressed as measurements, so they are gone. The cached values are not
+        // consulted either: a stored number cannot outrank what the stages measured.
+        val finalHrPhaseDeep = MeasuredVitalsPolicy.hrPhase(computedHrDeep)
+        val finalHrPhaseLight = MeasuredVitalsPolicy.hrPhase(computedHrLight)
+        val finalHrPhaseRem = MeasuredVitalsPolicy.hrPhase(computedHrRem)
 
         val totalAsleepM = finalDeep + finalRem + finalLight
         val totalInBedM = totalAsleepM + finalAwake
-        val finalSleepEfficiencyPct = when {
-            totalInBedM > 0 && totalAsleepM > 0 -> ((totalAsleepM * 100.0) / totalInBedM).roundToInt().coerceIn(50, 99)
-            finalSleep > 0 -> (finalSleep + 5).coerceIn(74, 97)
-            else -> existing.sleepEfficiencyPct
-        }
+        // Efficiency is asleep over in bed, from real stages. A sleep score is not an
+        // efficiency and adding five points to it was arithmetic pretending to be one.
+        val finalSleepEfficiencyPct = MeasuredVitalsPolicy.sleepEfficiencyPct(totalAsleepM, totalInBedM)
 
         // 6. 4-Block Circadian Stress (DailyModel: stressBeforeDawn, stressMorning, stressAfternoon, stressNight)
         val todayHrSamples = allHrSamples.filter { it.time >= todayStart }
-        val currentHour = ZonedDateTime.now(localZone).hour
-        val refStress = if (stressScore > 0) stressScore else 34
+        val refStress = if (stressScore > 0) stressScore else 0
+        // The only measured reference for a block is the nightly minimum; without it there
+        // is no anchor to subtract and "+18" alone would be a guess.
+        val nightAnchorHr = finalMinHr
 
-        fun computeBlockStress(startHour: Int, endHour: Int, fallbackMult: Double, existingVal: Int): Int {
+        fun measuredBlockStress(startHour: Int, endHour: Int, stressWeight: Double): Int {
             val blockSamples = todayHrSamples.filter {
                 val h = it.time.atZone(localZone).hour
                 h in startHour..endHour
             }
-            return when {
-                blockSamples.isNotEmpty() -> {
-                    val meanHr = blockSamples.map { it.beatsPerMinute.toDouble() }.average()
-                    val hrDerived = ((meanHr - baseNightHr) * 1.45 + 18.0).roundToInt().coerceIn(8, 92)
-                    ((hrDerived * 0.65) + (refStress * fallbackMult * 0.35)).roundToInt().coerceIn(8, 95)
-                }
-                currentHour >= startHour && refStress > 0 -> (refStress * fallbackMult).roundToInt().coerceIn(10, 92)
-                else -> existingVal
+            if (blockSamples.isEmpty() || nightAnchorHr <= 0) return MeasuredVitalsPolicy.blockStress(0)
+
+            val meanHr = blockSamples.map { it.beatsPerMinute.toDouble() }.average()
+            val hrDerived = ((meanHr - nightAnchorHr) * 1.45 + 18.0).roundToInt().coerceIn(8, 92)
+            val blended = if (refStress > 0) {
+                ((hrDerived * 0.65) + (refStress * stressWeight * 0.35)).roundToInt()
+            } else {
+                hrDerived
             }
+            return MeasuredVitalsPolicy.blockStress(blended.coerceIn(8, 95))
         }
 
-        val finalStressDawn = computeBlockStress(0, 5, 0.68, existing.stressDawn)
-        val finalStressMorning = computeBlockStress(6, 11, 0.94, existing.stressMorning)
-        val finalStressAfternoon = computeBlockStress(12, 17, 1.08, existing.stressAfternoon)
-        val finalStressNight = computeBlockStress(18, 23, 0.86, existing.stressNight)
+        val finalStressDawn = measuredBlockStress(0, 5, 0.68)
+        val finalStressMorning = measuredBlockStress(6, 11, 0.94)
+        val finalStressAfternoon = measuredBlockStress(12, 17, 1.08)
+        val finalStressNight = measuredBlockStress(18, 23, 0.86)
 
         // 7. Basal Metabolism BMR + Distance Km + Nocturnal Respiratory Rate (CalorieSyncModel, StepsInfo, SleepSyncModel)
-        val nowLocal = ZonedDateTime.now(localZone)
-        val minsSinceMidnight = (nowLocal.hour * 60 + nowLocal.minute).coerceAtLeast(60)
-        val computedBasalCalories = (minsSinceMidnight * 1.166).roundToInt().coerceIn(120, 1850)
-        val finalBasalCalories = maxOf(computedBasalCalories, existing.basalCalories)
-
-        val computedDistanceKm = ((refSteps * 0.000762f) * 100f).roundToInt() / 100f
-        val finalDistanceKm = if (computedDistanceKm > 0f) computedDistanceKm else existing.distanceKm
-
-        val computedRespRate = if (finalAvgHr > 0 || finalHrv > 0) {
-            val rawRr = 14.2f + ((finalAvgHr - 60).coerceIn(-12, 22) * 0.07f) - ((finalHrv - 45).coerceIn(-25, 35) * 0.02f)
-            ((rawRr * 10f).roundToInt() / 10f).coerceIn(11.5f, 20.5f)
-        } else {
-            existing.respiratoryRate
-        }
+        // Each comes from its own record now; no substitution fills a missing one. The cache
+        // only carries a value an earlier read measured, and never outranks a fresh record.
+        val finalBasalCalories = if (measuredBasalCalories > 0) measuredBasalCalories else existing.basalCalories
+        val finalDistanceKm = if (measuredDistanceKm > 0f) measuredDistanceKm else existing.distanceKm
+        val finalRespiratoryRate = if (measuredRespiratoryRate > 0f) measuredRespiratoryRate else existing.respiratoryRate
 
         val vitals = RingConnVitals(
             lastHeartRate = finalHr,
@@ -994,7 +1085,7 @@ object RingConnTelemetryReader {
             stressNight = finalStressNight,
             basalCalories = finalBasalCalories,
             distanceKm = finalDistanceKm,
-            respiratoryRate = computedRespRate
+            respiratoryRate = finalRespiratoryRate
         )
 
         saveToPreferences(context, vitals, source = sourceLabel, stagesAuthoritative = true)
@@ -1058,9 +1149,7 @@ object RingConnTelemetryReader {
         return true
     }
 
-    fun rolloverVitalsForNewDay(vitals: RingConnVitals, nowHour: Int = 0, nowMinute: Int = 0): RingConnVitals {
-        val minsSinceMid = (nowHour * 60 + nowMinute).coerceAtLeast(60)
-        val todayBasal = (minsSinceMid * 1.166).roundToInt().coerceIn(120, 1850)
+    fun rolloverVitalsForNewDay(vitals: RingConnVitals): RingConnVitals {
         return vitals.copy(
             sleepScore = 0,
             activityScore = 0,
@@ -1095,7 +1184,9 @@ object RingConnTelemetryReader {
             stressMorning = 0,
             stressAfternoon = 0,
             stressNight = 0,
-            basalCalories = todayBasal,
+            // Basal calories are a record the ring writes, not clock arithmetic: a new day
+            // starts with none until the ring publishes today's rate.
+            basalCalories = 0,
             distanceKm = 0.0f
         )
     }
@@ -1294,29 +1385,27 @@ object RingConnTelemetryReader {
             val mergedLight = night.light
             val mergedAwake = night.awake
 
-            val baseNightHr = if (minHr > 0) minHr else if (finalAvgHr > 0) (finalAvgHr - 8).coerceIn(46, 75) else 56
-            val mergedHrDeep = hcVitals?.hrPhaseDeep?.takeIf { it > 0 } ?: (cached.hrPhaseDeep.takeIf { it > 0 } ?: if (finalSleepScore > 0) (baseNightHr + 1) else 0)
-            val mergedHrLight = hcVitals?.hrPhaseLight?.takeIf { it > 0 } ?: (cached.hrPhaseLight.takeIf { it > 0 } ?: if (finalSleepScore > 0) (baseNightHr + 4) else 0)
-            val mergedHrRem = hcVitals?.hrPhaseRem?.takeIf { it > 0 } ?: (cached.hrPhaseRem.takeIf { it > 0 } ?: if (finalSleepScore > 0) (baseNightHr + 6) else 0)
+            // A phase heart rate the Health Connect read measured survives; nothing is
+            // derived from an anchor here, so a night without stage samples has none.
+            val mergedHrDeep = MeasuredVitalsPolicy.hrPhase(hcVitals?.hrPhaseDeep?.takeIf { it > 0 } ?: cached.hrPhaseDeep)
+            val mergedHrLight = MeasuredVitalsPolicy.hrPhase(hcVitals?.hrPhaseLight?.takeIf { it > 0 } ?: cached.hrPhaseLight)
+            val mergedHrRem = MeasuredVitalsPolicy.hrPhase(hcVitals?.hrPhaseRem?.takeIf { it > 0 } ?: cached.hrPhaseRem)
 
             val totalAsleepM = mergedDeep + mergedRem + mergedLight
             val totalInBedM = totalAsleepM + mergedAwake
-            val mergedSleepEff = hcVitals?.sleepEfficiencyPct?.takeIf { it > 0 } ?: when {
-                totalInBedM > 0 && totalAsleepM > 0 -> ((totalAsleepM * 100.0) / totalInBedM).roundToInt().coerceIn(50, 99)
-                finalSleepScore > 0 -> (finalSleepScore + 5).coerceIn(74, 97)
-                else -> cached.sleepEfficiencyPct
-            }
+            val mergedSleepEff = hcVitals?.sleepEfficiencyPct?.takeIf { it > 0 }
+                ?: MeasuredVitalsPolicy.sleepEfficiencyPct(totalAsleepM, totalInBedM)
 
-            val refStress = if (finalStressScore > 0) finalStressScore else 34
-            val mergedStressDawn = hcVitals?.stressDawn?.takeIf { it > 0 } ?: (cached.stressDawn.takeIf { it > 0 } ?: (refStress * 0.68).roundToInt().coerceIn(10, 90))
-            val mergedStressMorning = if (curHour >= 6) (hcVitals?.stressMorning?.takeIf { it > 0 } ?: (cached.stressMorning.takeIf { it > 0 } ?: (refStress * 0.94).roundToInt().coerceIn(10, 92))) else 0
-            val mergedStressAfternoon = if (curHour >= 12) (hcVitals?.stressAfternoon?.takeIf { it > 0 } ?: (cached.stressAfternoon.takeIf { it > 0 } ?: (refStress * 1.08).roundToInt().coerceIn(10, 94))) else 0
-            val mergedStressNight = if (curHour >= 18) (hcVitals?.stressNight?.takeIf { it > 0 } ?: (cached.stressNight.takeIf { it > 0 } ?: (refStress * 0.86).roundToInt().coerceIn(10, 90))) else 0
+            // Blocks the ring recorded measurements for survive; blocks it did not record stay
+            // unknown instead of being filled from the stress score times a circadian factor.
+            val mergedStressDawn = MeasuredVitalsPolicy.blockStress(hcVitals?.stressDawn?.takeIf { it > 0 } ?: cached.stressDawn)
+            val mergedStressMorning = if (curHour >= 6) MeasuredVitalsPolicy.blockStress(hcVitals?.stressMorning?.takeIf { it > 0 } ?: cached.stressMorning) else 0
+            val mergedStressAfternoon = if (curHour >= 12) MeasuredVitalsPolicy.blockStress(hcVitals?.stressAfternoon?.takeIf { it > 0 } ?: cached.stressAfternoon) else 0
+            val mergedStressNight = if (curHour >= 18) MeasuredVitalsPolicy.blockStress(hcVitals?.stressNight?.takeIf { it > 0 } ?: cached.stressNight) else 0
 
-            val minsSinceMid = (nowLocal.hour * 60 + nowLocal.minute).coerceAtLeast(60)
-            val mergedBasalCal = maxOf(hcVitals?.basalCalories ?: 0, (minsSinceMid * 1.166).roundToInt().coerceIn(120, 1850), cached.basalCalories)
-            val mergedDistKm = if (finalSteps > 0) (((finalSteps * 0.000762f) * 100f).roundToInt() / 100f) else (hcVitals?.distanceKm?.takeIf { it > 0f } ?: cached.distanceKm)
-            val mergedRespRate = hcVitals?.respiratoryRate?.takeIf { it > 0f } ?: (cached.respiratoryRate.takeIf { it > 0f } ?: if (finalAvgHr > 0) (((14.2f + ((finalAvgHr - 60).coerceIn(-12, 22) * 0.07f)) * 10f).roundToInt() / 10f) else 0f)
+            val mergedBasalCal = hcVitals?.basalCalories?.takeIf { it > 0 } ?: cached.basalCalories
+            val mergedDistKm = hcVitals?.distanceKm?.takeIf { it > 0f } ?: cached.distanceKm
+            val mergedRespRate = hcVitals?.respiratoryRate?.takeIf { it > 0f } ?: cached.respiratoryRate
 
             val mergedOdi = hcVitals?.odiDropsPerHour?.takeIf { it > 0f } ?: (if (!isWidgetSleepStaleFromYesterday && widgetVitals.odiDropsPerHour > 0f) widgetVitals.odiDropsPerHour else cached.odiDropsPerHour)
 
@@ -1574,6 +1663,9 @@ object RingConnTelemetryReader {
             putInt(KEY_NAP_MINUTES, vitals.napMinutes)
             putString(KEY_BEDTIME_WINDOW, vitals.bedtimeWindow.ifBlank { prefs.getString(KEY_BEDTIME_WINDOW, "") ?: "" })
             putInt(KEY_STAND_HOURS, vitals.standHours)
+            // These keys carry measurement-derived values only. The reader no longer derives
+            // them, so a zero means "not measured" and must not be back-filled from the cache.
+            putInt(KEY_VITALS_SCHEMA, VITALS_SCHEMA_VERSION)
             putInt(KEY_HR_PHASE_DEEP, vitals.hrPhaseDeep)
             putInt(KEY_HR_PHASE_REM, vitals.hrPhaseRem)
             putInt(KEY_HR_PHASE_LIGHT, vitals.hrPhaseLight)
@@ -1591,7 +1683,36 @@ object RingConnTelemetryReader {
         }
     }
 
+    /**
+     * Forgets derived values persisted before the verified-only rule.
+     *
+     * Those keys hold both measurements and the arithmetic that used to fill them, so a
+     * restored number cannot be proven to be a reading. Dropping them once means the watch
+     * shows "unknown" until the next measured sample, instead of showing an invention that
+     * looks like data forever.
+     */
+    fun dropLegacyInventedVitals(prefs: SharedPreferences): Boolean {
+        if (prefs.getInt(KEY_VITALS_SCHEMA, 1) >= VITALS_SCHEMA_VERSION) return false
+        prefs.edit().apply {
+            putInt(KEY_HR_PHASE_DEEP, 0)
+            putInt(KEY_HR_PHASE_REM, 0)
+            putInt(KEY_HR_PHASE_LIGHT, 0)
+            putInt(KEY_SLEEP_EFFICIENCY_PCT, 0)
+            putInt(KEY_STRESS_DAWN, 0)
+            putInt(KEY_STRESS_MORNING, 0)
+            putInt(KEY_STRESS_AFTERNOON, 0)
+            putInt(KEY_STRESS_NIGHT, 0)
+            putInt(KEY_BASAL_CALORIES, 0)
+            putFloat(KEY_DISTANCE_KM, 0.0f)
+            putFloat(KEY_RESPIRATORY_RATE, 0.0f)
+            putInt(KEY_VITALS_SCHEMA, VITALS_SCHEMA_VERSION)
+            apply()
+        }
+        return true
+    }
+
     fun parseFromPreferences(prefs: SharedPreferences): RingConnVitals {
+        dropLegacyInventedVitals(prefs)
         ensureDailyRollover(prefs)
         return RingConnVitals(
             lastHeartRate = prefs.getInt(KEY_LASTLY_HR, 0),

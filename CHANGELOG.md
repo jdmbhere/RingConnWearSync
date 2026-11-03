@@ -9,6 +9,28 @@ tests must pass and both release APKs must assemble, or the tag does not ship.
 `scripts/audit-watch-strings.py` additionally fails the build when a one-line
 watch label is too long for the space its surface leaves.
 
+## [Unreleased]
+
+### Changed
+
+- **The watch only shows vitals the ring measured.** The reader filled missing measurements with
+  arithmetic: a nightly anchor plus fixed offsets for the sleep-phase heart rates (`avgHeartRate 73`
+  produced 66/69/71), the stress score times a circadian factor per block (47 produced 32/44/51),
+  the sleep score plus five for the sleep efficiency, and free 18/17 points plus a 45 floor for the
+  computed sleep score. Every one of those numbers looked measured, so an empty card could not be
+  told apart from a reading. They now come from the measurement or stay `0`, decided in one place by
+  `MeasuredVitalsPolicy` and pinned by `MeasuredVitalsPolicyTest`. Values written by the old
+  arithmetic are dropped from the continuity cache once instead of being restored as data
+  (`LegacyVitalsCacheTest`).
+- **Basal calories, distance and respiratory rate come from Health Connect records.**
+  `BasalMetabolicRateRecord`, `DistanceRecord` and `RespiratoryRateRecord` replace
+  `minutesSinceMidnight x 1.166`, `steps x 0.000762` and a pulse/HRV formula; a record the ring did
+  not publish leaves the field at `0`. The three read permissions joined the core set, so Health
+  Connect asks for them once and the ring's records become readable.
+- **The vitals screen no longer calls the breath rate an estimate.** It was described as derived
+  from pulse and HRV; it is now the ring's own record, and the card shows `--` until the ring sends
+  one.
+
 ## [1.9.39] - 2026-10-24
 
 ### Changed
