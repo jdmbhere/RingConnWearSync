@@ -11,6 +11,8 @@ watch label is too long for the space its surface leaves.
 
 ## [Unreleased]
 
+## [1.9.41] - 2026-11-03
+
 ### Changed
 
 - **The watch only shows vitals the ring measured.** The reader filled missing measurements with
