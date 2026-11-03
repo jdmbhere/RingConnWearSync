@@ -36,7 +36,8 @@ class LegacyVitalsCacheTest {
             "basalCalories" to 970,
             "distanceKm" to 1.21f,
             "respiratoryRate" to 15.1f,
-            // A widget value, measured, and unaffected by the migration.
+            // The score shares one key with the widget's own score, so a value the old stage
+            // arithmetic wrote is indistinguishable from a reading. It goes too.
             "sleepScore" to 78
         )
     )
@@ -57,8 +58,9 @@ class LegacyVitalsCacheTest {
         assertEquals(0.0f, vitals.distanceKm, 0.01f)
         assertEquals(0.0f, vitals.respiratoryRate, 0.01f)
 
-        // The widget-owned score is a real measurement and keeps its value.
-        assertEquals(78, vitals.sleepScore)
+        // A cached score cannot be proven to be the widget's, so it is unknown until the next
+        // sync rather than trusted for a whole day on the strength of its own plausibility.
+        assertEquals(0, vitals.sleepScore)
     }
 
     @Test

@@ -1,6 +1,7 @@
 package io.github.hardbas.wearsync.bridge
 
 import io.github.hardbas.wearsync.bridge.service.MeasuredVitalsPolicy
+import io.github.hardbas.wearsync.bridge.service.RingConnTelemetryReader
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -141,6 +142,8 @@ class MeasuredVitalsPolicyTest {
     }
 
     private companion object {
-        const val RINGCONN = "com.gdjztech.ringconn"
+        // Taken from production so a rename or a change of the ring's package breaks this test
+        // instead of letting it keep passing against a copy of the string.
+        val RINGCONN = RingConnTelemetryReader.RINGCONN_PKG
     }
 }

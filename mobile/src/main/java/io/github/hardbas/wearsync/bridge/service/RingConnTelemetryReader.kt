@@ -1698,6 +1698,10 @@ object RingConnTelemetryReader {
             putInt(KEY_HR_PHASE_REM, 0)
             putInt(KEY_HR_PHASE_LIGHT, 0)
             putInt(KEY_SLEEP_EFFICIENCY_PCT, 0)
+            // The score shares one key with the widget's own score, so a value stored by the
+            // old stage arithmetic is indistinguishable from a reading. One cycle of unknown
+            // until the next widget sync is cheaper than trusting a number that might be ours.
+            putInt(KEY_SLEEP_SCORE, 0)
             putInt(KEY_STRESS_DAWN, 0)
             putInt(KEY_STRESS_MORNING, 0)
             putInt(KEY_STRESS_AFTERNOON, 0)

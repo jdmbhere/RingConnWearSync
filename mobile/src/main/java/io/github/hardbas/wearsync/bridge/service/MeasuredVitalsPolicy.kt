@@ -46,8 +46,10 @@ object MeasuredVitalsPolicy {
     /**
      * The stress derived from a block's measured mean heart rate, unchanged.
      *
-     * The block multiplier that produced `stressScore x 0.68 / 0.94 / 1.08 / 0.86` is
-     * gone: it fabricated a full circadian curve out of a single number.
+     * The standalone multiplier that fabricated a value for a block with no heart rate
+     * samples is gone, and so is the `34` it fell back to. What survives is a 0.35 weight
+     * inside the measured branch, where the block's own mean heart rate is what leads. Those
+     * weights still shape a curve that was measured; they no longer invent one.
      */
     fun blockStress(measuredStress: Int): Int = measuredStress.coerceAtLeast(0)
 
