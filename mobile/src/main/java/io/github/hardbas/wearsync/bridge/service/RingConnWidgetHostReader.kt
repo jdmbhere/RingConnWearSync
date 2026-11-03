@@ -2,14 +2,18 @@ package io.github.hardbas.wearsync.bridge.service
 
 import io.github.hardbas.wearsync.bridge.R
 import android.appwidget.AppWidgetHost
+import android.appwidget.AppWidgetHostView
 import android.appwidget.AppWidgetManager
+import android.appwidget.AppWidgetProviderInfo
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.Log
 import android.view.View
 import android.view.ViewGroup
+import android.widget.RemoteViews
 import android.widget.TextView
 import io.github.hardbas.wearsync.bridge.data.RingConnVitals
 import kotlinx.coroutines.Dispatchers
@@ -20,6 +24,7 @@ object RingConnWidgetHostReader {
     private const val TAG = "RingConnWidgetHost"
     const val HOST_ID = 4488
     private const val PREFS_NAME = "ringconn_widget_bindings"
+    private const val PUSH_DEBOUNCE_MS = 2_500L
 
     private val RINGCONN_PROVIDERS = listOf(
         ComponentName("com.gdjztech.ringconn", "com.gdjztech.remotewidget.MediumHomeAppWidgetReceiver"),
@@ -30,14 +35,42 @@ object RingConnWidgetHostReader {
         ComponentName("com.gdjztech.ringconn", "com.gdjztech.remotewidget.SportIndicatorsLargeWidgetReceiver")
     )
 
-    private class CleanableAppWidgetHost(context: Context, hostId: Int) : AppWidgetHost(context, hostId) {
+    private class PushAwareAppWidgetHostView(
+        context: Context,
+        private val onRemoteViewsUpdated: () -> Unit
+    ) : AppWidgetHostView(context) {
+        override fun updateAppWidget(remoteViews: RemoteViews?) {
+            super.updateAppWidget(remoteViews)
+            if (remoteViews != null) {
+                onRemoteViewsUpdated()
+            }
+        }
+    }
+
+    private class CleanableAppWidgetHost(
+        context: Context,
+        hostId: Int,
+        private val onRemoteViewsUpdated: () -> Unit
+    ) : AppWidgetHost(context, hostId) {
         public override fun clearViews() {
             super.clearViews()
+        }
+
+        override fun onCreateView(
+            context: Context,
+            appWidgetId: Int,
+            appWidget: AppWidgetProviderInfo?
+        ): AppWidgetHostView {
+            return PushAwareAppWidgetHostView(context, onRemoteViewsUpdated)
         }
     }
 
     private var appWidgetHost: CleanableAppWidgetHost? = null
     private var isListening = false
+    @Volatile private var persistentListeningActive = false
+    @Volatile private var inReadCycle = false
+    @Volatile private var lastPushTriggerElapsedMs = 0L
+    @Volatile private var onPushCallback: (() -> Unit)? = null
     private val boundWidgetMap = mutableMapOf<ComponentName, Int>()
     private var pendingBindWidgetId: Int = -1
     private var pendingBindProvider: ComponentName? = null
@@ -56,6 +89,32 @@ object RingConnWidgetHostReader {
             }
         }
         return false
+    }
+
+    /**
+     * Starts persistent AppWidgetHost listening so Android's AppWidgetService pushes
+     * RemoteViews updates to us in real time whenever RingConn refreshes a widget.
+     */
+    fun startPersistentListening(context: Context, onRemoteViewsPushed: () -> Unit) {
+        onPushCallback = onRemoteViewsPushed
+        persistentListeningActive = true
+        try {
+            val host = getHost(context.applicationContext)
+            host.startListening()
+            isListening = true
+            Log.i(TAG, "Persistent AppWidgetHost ($HOST_ID) push listener active.")
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed starting persistent AppWidgetHost listener: ${e.message}")
+        }
+    }
+
+    fun stopPersistentListening() {
+        persistentListeningActive = false
+        onPushCallback = null
+        val host = appWidgetHost ?: return
+        runCatching { host.clearViews() }
+        runCatching { host.stopListening() }
+        isListening = false
     }
 
     /**
@@ -128,7 +187,16 @@ object RingConnWidgetHostReader {
     private fun getHost(context: Context): CleanableAppWidgetHost {
         var h = appWidgetHost
         if (h == null) {
-            h = CleanableAppWidgetHost(context.applicationContext, HOST_ID)
+            h = CleanableAppWidgetHost(context.applicationContext, HOST_ID) {
+                if (persistentListeningActive && !inReadCycle) {
+                    val nowElapsed = SystemClock.elapsedRealtime()
+                    if (nowElapsed - lastPushTriggerElapsedMs >= PUSH_DEBOUNCE_MS) {
+                        lastPushTriggerElapsedMs = nowElapsed
+                        Log.i(TAG, "Reactive push: RingConn updated widget RemoteViews in background")
+                        onPushCallback?.invoke()
+                    }
+                }
+            }
             appWidgetHost = h
         }
         return h
@@ -151,10 +219,50 @@ object RingConnWidgetHostReader {
     }
 
     /**
-     * Executes persistent widget host extraction on R5CYA1MLMTV.
+     * Evaluates whether Phase 3 (toggling updateAppWidgetOptions to force Jetpack Glance
+     * to recompose RemoteViews) must run.
+     *
+     * Critically, [collectedTokens] must be evaluated against an empty [RingConnVitals]
+     * baseline rather than [baseVitals]: [baseVitals] carries cached values from earlier
+     * in the day, which previously caused [hasValidTelemetry] to return true even when
+     * the widget views themselves returned zero metrics.
+     */
+    fun shouldTriggerGlanceRecompose(
+        collectedTokens: List<String>,
+        baseVitals: RingConnVitals,
+        hadNewAllocation: Boolean
+    ): Boolean {
+        if (hadNewAllocation || collectedTokens.isEmpty()) return true
+        val widgetOnly = RingConnTelemetryParser.parseTokens(collectedTokens, RingConnVitals())
+        return !hasValidTelemetry(widgetOnly)
+    }
+
+    /**
+     * Returns responsive (widthDp, heightDp) options matching each RingConn Glance
+     * receiver's size class so Large and Medium widgets render their full layouts
+     * instead of emitting "unsupported size" or truncating rows.
+     */
+    fun widgetDimensionsDp(className: String, toggle: Boolean): Pair<Int, Int> {
+        return when {
+            className.contains("Large", ignoreCase = true) -> {
+                360 to (if (toggle) 321 else 320)
+            }
+            className.contains("Medium", ignoreCase = true) ||
+                className.endsWith(".HomeAppWidgetReceiver") -> {
+                360 to (if (toggle) 201 else 200)
+            }
+            else -> {
+                276 to (if (toggle) 201 else 200)
+            }
+        }
+    }
+
+    /**
+     * Executes persistent widget host extraction.
      * Binds once, caches widget IDs in memory & SharedPreferences, triggers Jetpack Glance
-     * via updateAppWidgetOptions only when fresh compose is needed, inflates views,
-     * and extracts 100% exact live numbers from RingConn's RemoteViews.
+     * via updateAppWidgetOptions when widget-only tokens are missing or newly allocated,
+     * inflates views with provider-appropriate dimensions, and extracts live numbers from
+     * RingConn's RemoteViews.
      */
     suspend fun readRingConnWidgets(context: Context): RingConnVitals? = withContext(Dispatchers.Main) {
         if (pendingBindWidgetId != -1) {
@@ -165,10 +273,13 @@ object RingConnWidgetHostReader {
         val host = getHost(context)
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
+        inReadCycle = true
         try {
-            host.startListening()
-            isListening = true
-            Log.d(TAG, "AppWidgetHost ($HOST_ID) started listening.")
+            if (!isListening) {
+                host.startListening()
+                isListening = true
+                Log.d(TAG, "AppWidgetHost ($HOST_ID) started listening.")
+            }
         } catch (e: Exception) {
             Log.w(TAG, "AppWidgetHost startListening error: ${e.message}")
         }
@@ -248,15 +359,20 @@ object RingConnWidgetHostReader {
                         val hostView = host.createView(context, widgetId, providerInfo)
                         if (hostView != null) {
                             hostView.measure(
-                                View.MeasureSpec.makeMeasureSpec(800, View.MeasureSpec.EXACTLY),
-                                View.MeasureSpec.makeMeasureSpec(800, View.MeasureSpec.EXACTLY)
+                                View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY),
+                                View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY)
                             )
-                            hostView.layout(0, 0, 800, 800)
+                            hostView.layout(0, 0, 1080, 1080)
 
                             val viewTexts = mutableListOf<String>()
                             extractTextsFromView(hostView, viewTexts)
                             Log.d(TAG, "Extracted ${viewTexts.size} strings from widget ID $widgetId ($comp): $viewTexts")
-                            tokens.addAll(viewTexts)
+                            if (viewTexts.isNotEmpty()) {
+                                if (tokens.isNotEmpty()) {
+                                    tokens.add(RingConnTelemetryParser.WIDGET_BOUNDARY)
+                                }
+                                tokens.addAll(viewTexts)
+                            }
                         }
                     } catch (e: Exception) {
                         Log.w(TAG, "Failed inflating widget ID $widgetId ($comp): ${e.message}")
@@ -269,26 +385,23 @@ object RingConnWidgetHostReader {
 
             // Phase 2: First pass - scrape directly without sending 6 widget options updates
             var collectedTokens = scrapeActiveWidgets()
-            var parsedVitals = if (collectedTokens.isNotEmpty()) {
-                RingConnTelemetryParser.parseTokens(collectedTokens, baseVitals)
-            } else null
 
-            // Phase 3: If first pass yielded no valid telemetry or was freshly allocated, trigger Glance updateAppWidgetOptions and retry
-            if (parsedVitals == null || !hasValidTelemetry(parsedVitals)) {
-                Log.d(TAG, "First pass produced no valid telemetry; toggling updateAppWidgetOptions to trigger Glance compose...")
+            // Phase 3: Evaluate widget-only telemetry (not cached baseVitals!) to decide whether to trigger Glance recompose
+            if (shouldTriggerGlanceRecompose(collectedTokens, baseVitals, hadNewAllocation)) {
+                Log.d(TAG, "First pass widget-only telemetry empty or newly allocated; toggling updateAppWidgetOptions to trigger Glance compose...")
                 for ((comp, widgetId) in activeBindings) {
                     try {
                         val toggleKey = "toggle_h_${comp.className}"
                         val currentToggle = prefs.getBoolean(toggleKey, false)
                         val nextToggle = !currentToggle
                         prefs.edit().putBoolean(toggleKey, nextToggle).apply()
-                        val height = if (nextToggle) 201 else 200
+                        val (widthDp, heightDp) = widgetDimensionsDp(comp.className, nextToggle)
 
                         val options = Bundle().apply {
-                            putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 276)
-                            putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, 276)
-                            putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, height)
-                            putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, height)
+                            putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, widthDp)
+                            putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH, widthDp)
+                            putInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, heightDp)
+                            putInt(AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, heightDp)
                         }
                         appWidgetManager.updateAppWidgetOptions(widgetId, options)
                     } catch (e: Exception) {
@@ -301,31 +414,36 @@ object RingConnWidgetHostReader {
                 delay(retryWait)
 
                 collectedTokens = scrapeActiveWidgets()
-                if (collectedTokens.isNotEmpty()) {
-                    parsedVitals = RingConnTelemetryParser.parseTokens(collectedTokens, baseVitals)
-                }
             }
 
-            if (parsedVitals != null && hasValidTelemetry(parsedVitals)) {
+            val widgetOnlyVitals = if (collectedTokens.isNotEmpty()) {
+                RingConnTelemetryParser.parseTokens(collectedTokens, RingConnVitals())
+            } else null
+
+            if (widgetOnlyVitals != null && hasValidTelemetry(widgetOnlyVitals)) {
+                val mergedVitals = RingConnTelemetryParser.parseTokens(collectedTokens, baseVitals)
                 RingConnTelemetryReader.saveToPreferences(
                     context = context,
-                    vitals = parsedVitals,
+                    vitals = mergedVitals,
                     source = context.getString(R.string.source_widgethost_short)
                 )
-                Log.i(TAG, "Successfully extracted RingConn vitals via WidgetHost: $parsedVitals")
-                return@withContext parsedVitals
+                Log.i(TAG, "Successfully extracted RingConn vitals via WidgetHost: $mergedVitals")
+                return@withContext mergedVitals
             }
 
             return@withContext null
         } finally {
-            runCatching {
-                host.clearViews()
-            }.onFailure { Log.w(TAG, "Error clearing AppWidgetHost views: ${it.message}") }
-            runCatching {
-                host.stopListening()
-            }.onFailure { Log.w(TAG, "Error stopping AppWidgetHost listening: ${it.message}") }
-            isListening = false
-            Log.d(TAG, "AppWidgetHost ($HOST_ID) cleared views and stopped listening.")
+            inReadCycle = false
+            if (!persistentListeningActive) {
+                runCatching {
+                    host.clearViews()
+                }.onFailure { Log.w(TAG, "Error clearing AppWidgetHost views: ${it.message}") }
+                runCatching {
+                    host.stopListening()
+                }.onFailure { Log.w(TAG, "Error stopping AppWidgetHost listening: ${it.message}") }
+                isListening = false
+                Log.d(TAG, "AppWidgetHost ($HOST_ID) cleared views and stopped listening.")
+            }
         }
     }
 

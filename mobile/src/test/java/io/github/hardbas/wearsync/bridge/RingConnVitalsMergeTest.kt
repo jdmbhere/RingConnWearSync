@@ -375,5 +375,92 @@ class RingConnVitalsMergeTest {
         assertEquals(15, parsed.sleepAwakeMins)
         assertEquals(370, parsed.sleepDeepMins + parsed.sleepRemMins + parsed.sleepLightMins)
     }
+
+    @Test
+    fun parser_doesNotStealPreviousMetricScore_inAdjacentHeaderValuePairs() {
+        // Label-first layout (HomeAppWidget / Accessibility tree without intermediate prose):
+        // "Activity" must not steal 85 from "Sleep", and "Stress" must not steal 78 from "Activity".
+        val labelFirstTokens = listOf("Sleep", "85", "Activity", "78", "Stress", "28", "Battery", "91%")
+        val parsedLabelFirst = RingConnTelemetryParser.parseTokens(labelFirstTokens, RingConnVitals())
+        assertEquals(85, parsedLabelFirst.sleepScore)
+        assertEquals(78, parsedLabelFirst.activityScore)
+        assertEquals(28, parsedLabelFirst.stressScore)
+        assertEquals(91, parsedLabelFirst.ringBattery)
+
+        // Value-first layout (MediumHomeAppWidget):
+        val valueFirstTokens = listOf("85", "Sleep", "78", "Activity", "28", "Stress", "91%", "Battery")
+        val parsedValueFirst = RingConnTelemetryParser.parseTokens(valueFirstTokens, RingConnVitals())
+        assertEquals(85, parsedValueFirst.sleepScore)
+        assertEquals(78, parsedValueFirst.activityScore)
+        assertEquals(28, parsedValueFirst.stressScore)
+        assertEquals(91, parsedValueFirst.ringBattery)
+    }
+
+    @Test
+    fun parser_respectsWidgetBoundaries_preventingCrossWidgetTokenBleed() {
+        // Trailing number from widget A must never be consumed by a leading header in widget B
+        val tokens = listOf("Steps", "64", "---", "Stress", "31")
+        val parsed = RingConnTelemetryParser.parseTokens(tokens, RingConnVitals())
+        assertEquals(64, parsed.liveSteps)
+        assertEquals(31, parsed.stressScore)
+    }
+
+    @Test
+    fun widgetHostReader_shouldTriggerGlanceRecompose_whenWidgetPassIsEmptyDespiteCachedBase() {
+        val cachedBase = RingConnVitals(lastHeartRate = 72, ringBattery = 80, sleepScore = 84)
+        val emptyWidgetTokens = listOf("Vital Signs", "--")
+        assertTrue(
+            "Must trigger Glance recompose when widget pass 1 yields no live metrics even if cache has data",
+            RingConnWidgetHostReader.shouldTriggerGlanceRecompose(
+                collectedTokens = emptyWidgetTokens,
+                baseVitals = cachedBase,
+                hadNewAllocation = false
+            )
+        )
+
+        val populatedWidgetTokens = listOf("74", "bpm", "98", "%", "52", "ms")
+        assertFalse(
+            "Should skip Glance recompose when pass 1 already extracted valid widget metrics and no new allocation occurred",
+            RingConnWidgetHostReader.shouldTriggerGlanceRecompose(
+                collectedTokens = populatedWidgetTokens,
+                baseVitals = cachedBase,
+                hadNewAllocation = false
+            )
+        )
+
+        assertTrue(
+            "Must trigger Glance recompose when a widget ID was newly allocated",
+            RingConnWidgetHostReader.shouldTriggerGlanceRecompose(
+                collectedTokens = populatedWidgetTokens,
+                baseVitals = cachedBase,
+                hadNewAllocation = true
+            )
+        )
+    }
+
+    @Test
+    fun widgetHostReader_assignsResponsiveDimensionsPerProviderSizeClass() {
+        val largeDim = RingConnWidgetHostReader.widgetDimensionsDp(
+            "com.gdjztech.remotewidget.DataIndicatorsLargeWidgetReceiver",
+            toggle = false
+        )
+        val largeDimToggled = RingConnWidgetHostReader.widgetDimensionsDp(
+            "com.gdjztech.remotewidget.SportIndicatorsLargeWidgetReceiver",
+            toggle = true
+        )
+        val mediumDim = RingConnWidgetHostReader.widgetDimensionsDp(
+            "com.gdjztech.remotewidget.MediumHomeAppWidgetReceiver",
+            toggle = false
+        )
+        val compactDim = RingConnWidgetHostReader.widgetDimensionsDp(
+            "com.gdjztech.remotewidget.DataIndicatorsWidgetReceiver",
+            toggle = false
+        )
+
+        assertEquals(360 to 320, largeDim)
+        assertEquals(360 to 321, largeDimToggled)
+        assertEquals(360 to 200, mediumDim)
+        assertEquals(276 to 200, compactDim)
+    }
 }
 

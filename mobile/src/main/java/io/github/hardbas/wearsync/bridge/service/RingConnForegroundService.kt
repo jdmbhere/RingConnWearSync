@@ -88,6 +88,10 @@ class RingConnForegroundService : Service() {
             Log.w(TAG, "Could not register userPresentReceiver", e)
         }
 
+        RingConnWidgetHostReader.startPersistentListening(this) {
+            syncTelemetryNow(this@RingConnForegroundService)
+        }
+
         scheduleWatchdog(this)
         startPeriodicSync()
     }
@@ -112,6 +116,7 @@ class RingConnForegroundService : Service() {
         try {
             unregisterReceiver(userPresentReceiver)
         } catch (_: Exception) {}
+        RingConnWidgetHostReader.stopPersistentListening()
         syncJob?.cancel()
         scope.cancel()
         scheduleWatchdog(this)

@@ -8,6 +8,7 @@ import kotlin.math.roundToInt
 
 object RingConnTelemetryParser {
     private const val TAG = "RingConnParser"
+    const val WIDGET_BOUNDARY = "---"
 
     // Regex matchers for units / composite tokens
     private val TIME_STRING_REGEX = Regex("""(?i)\b([0-9]|0[0-9]|1[0-9]|2[0-3]):([0-5][0-9])(?:\s*([ap]\.?\s*m\.?))?\b""")
@@ -99,7 +100,14 @@ object RingConnTelemetryParser {
             .map { it.trim() }
             .filter { it.isNotEmpty() }
 
-        val fullText = cleanTokens.joinToString(" ")
+        val fullText = cleanTokens.filter { it != WIDGET_BOUNDARY }.joinToString(" ")
+        val consumedIndices = mutableSetOf<Int>()
+
+        fun unconsumedTokenAt(idx: Int): String? {
+            if (idx !in cleanTokens.indices || idx in consumedIndices) return null
+            val candidate = cleanTokens[idx]
+            return if (candidate == WIDGET_BOUNDARY) null else candidate
+        }
 
         // 1. Check for DataIndicatorsWidget exact triple (HR bpm, SpO2 %, HRV ms)
         VITAL_SIGNS_REGEX.find(fullText)?.let {
@@ -116,6 +124,7 @@ object RingConnTelemetryParser {
         // 2. Token-by-token contextual parsing
         for (i in cleanTokens.indices) {
             val token = cleanTokens[i]
+            if (token == WIDGET_BOUNDARY) continue
             val lower = token.lowercase()
 
             if (IGNORED_TITLES.contains(lower) || lower.startsWith("unsupported size")) {
@@ -148,7 +157,7 @@ object RingConnTelemetryParser {
                     var ampm = match.groupValues[3].trim()
 
                     if (ampm.isEmpty()) {
-                        val nextToken = cleanTokens.getOrNull(i + 1)?.trim()
+                        val nextToken = unconsumedTokenAt(i + 1)?.trim()
                         if (nextToken != null && AMPM_STANDALONE_REGEX.matches(nextToken)) {
                             ampm = nextToken
                         }
@@ -202,91 +211,155 @@ object RingConnTelemetryParser {
 
             // --- Standalone Headers & Value Pairs ---
             // In MediumHomeAppWidget, value might be immediately BEFORE or AFTER label
-            // (e.g. ["88", "Sleep"] or ["Sleep", "88"])
-            // Sleep Header
+            // (e.g. ["88", "Sleep"] or ["Sleep", "88"]). Track consumed indices so a header
+            // never steals a score already claimed by an earlier header.
             if (lower == "sleep" || lower == "sueño") {
-                val prev = cleanTokens.getOrNull(i - 1)
-                val next = cleanTokens.getOrNull(i + 1)
+                val prevIdx = i - 1
+                val nextIdx = i + 1
+                val prev = unconsumedTokenAt(prevIdx)
+                val next = unconsumedTokenAt(nextIdx)
                 val prevNum = prev?.toIntOrNull()
                 val nextNum = next?.toIntOrNull()
                 if (prev == "--" || next == "--" || prevNum == 0 || nextNum == 0) {
                     sleepScore = 0
+                    if (prev == "--" || prevNum == 0) consumedIndices.add(prevIdx)
+                    else if (next == "--" || nextNum == 0) consumedIndices.add(nextIdx)
                 } else if (prevNum != null && prevNum in 20..100) {
                     sleepScore = prevNum
-                } else if (nextNum != null && nextNum in 20..100 && !next!!.startsWith("/")) {
+                    consumedIndices.add(prevIdx)
+                } else if (nextNum != null && nextNum in 20..100 && !next.startsWith("/")) {
                     sleepScore = nextNum
+                    consumedIndices.add(nextIdx)
                 }
             }
 
             // Stage Durations (Deep / REM / Light / Awake)
             if (lower == "deep" || lower == "profundo" || lower == "sueño profundo") {
-                val candidate = cleanTokens.getOrNull(i + 1) ?: cleanTokens.getOrNull(i - 1)
-                parseDurationMinutes(candidate)?.let { if (it in 1..600) parsedDeep = it }
+                val nextIdx = i + 1
+                val prevIdx = i - 1
+                val nextDur = parseDurationMinutes(unconsumedTokenAt(nextIdx))
+                val prevDur = parseDurationMinutes(unconsumedTokenAt(prevIdx))
+                if (nextDur != null && nextDur in 1..600) {
+                    parsedDeep = nextDur
+                    consumedIndices.add(nextIdx)
+                } else if (prevDur != null && prevDur in 1..600) {
+                    parsedDeep = prevDur
+                    consumedIndices.add(prevIdx)
+                }
             }
             if (lower == "rem" || lower == "fase rem") {
-                val candidate = cleanTokens.getOrNull(i + 1) ?: cleanTokens.getOrNull(i - 1)
-                parseDurationMinutes(candidate)?.let { if (it in 1..600) parsedRem = it }
+                val nextIdx = i + 1
+                val prevIdx = i - 1
+                val nextDur = parseDurationMinutes(unconsumedTokenAt(nextIdx))
+                val prevDur = parseDurationMinutes(unconsumedTokenAt(prevIdx))
+                if (nextDur != null && nextDur in 1..600) {
+                    parsedRem = nextDur
+                    consumedIndices.add(nextIdx)
+                } else if (prevDur != null && prevDur in 1..600) {
+                    parsedRem = prevDur
+                    consumedIndices.add(prevIdx)
+                }
             }
             if (lower == "light" || lower == "ligero" || lower == "sueño ligero") {
-                val candidate = cleanTokens.getOrNull(i + 1) ?: cleanTokens.getOrNull(i - 1)
-                parseDurationMinutes(candidate)?.let { if (it in 1..600) parsedLight = it }
+                val nextIdx = i + 1
+                val prevIdx = i - 1
+                val nextDur = parseDurationMinutes(unconsumedTokenAt(nextIdx))
+                val prevDur = parseDurationMinutes(unconsumedTokenAt(prevIdx))
+                if (nextDur != null && nextDur in 1..600) {
+                    parsedLight = nextDur
+                    consumedIndices.add(nextIdx)
+                } else if (prevDur != null && prevDur in 1..600) {
+                    parsedLight = prevDur
+                    consumedIndices.add(prevIdx)
+                }
             }
             if (lower == "awake" || lower == "despierto") {
-                val candidate = cleanTokens.getOrNull(i + 1) ?: cleanTokens.getOrNull(i - 1)
-                parseDurationMinutes(candidate)?.let { if (it in 1..300) parsedAwake = it }
+                val nextIdx = i + 1
+                val prevIdx = i - 1
+                val nextDur = parseDurationMinutes(unconsumedTokenAt(nextIdx))
+                val prevDur = parseDurationMinutes(unconsumedTokenAt(prevIdx))
+                if (nextDur != null && nextDur in 1..300) {
+                    parsedAwake = nextDur
+                    consumedIndices.add(nextIdx)
+                } else if (prevDur != null && prevDur in 1..300) {
+                    parsedAwake = prevDur
+                    consumedIndices.add(prevIdx)
+                }
             }
 
             // Activity Header
             if (lower == "activity" || lower == "actividad") {
-                val prev = cleanTokens.getOrNull(i - 1)
-                val next = cleanTokens.getOrNull(i + 1)
+                val prevIdx = i - 1
+                val nextIdx = i + 1
+                val prev = unconsumedTokenAt(prevIdx)
+                val next = unconsumedTokenAt(nextIdx)
                 val prevNum = prev?.toIntOrNull()
                 val nextNum = next?.toIntOrNull()
                 if (prev == "--" || next == "--" || prevNum == 0 || nextNum == 0) {
                     activityScore = 0
+                    if (prev == "--" || prevNum == 0) consumedIndices.add(prevIdx)
+                    else if (next == "--" || nextNum == 0) consumedIndices.add(nextIdx)
                 } else if (prevNum != null && prevNum in 1..100) {
                     activityScore = prevNum
-                } else if (nextNum != null && nextNum in 1..100 && !next!!.startsWith("/")) {
+                    consumedIndices.add(prevIdx)
+                } else if (nextNum != null && nextNum in 1..100 && !next.startsWith("/")) {
                     activityScore = nextNum
+                    consumedIndices.add(nextIdx)
                 }
             }
 
             // Stress Header
             if (lower == "stress" || lower == "estrés" || lower == "estres") {
-                val prev = cleanTokens.getOrNull(i - 1)
-                val next = cleanTokens.getOrNull(i + 1)
+                val prevIdx = i - 1
+                val nextIdx = i + 1
+                val prev = unconsumedTokenAt(prevIdx)
+                val next = unconsumedTokenAt(nextIdx)
                 val prevNum = prev?.toIntOrNull()
                 val nextNum = next?.toIntOrNull()
                 if (prev == "--" || next == "--") {
                     stressScore = 0
+                    if (prev == "--") consumedIndices.add(prevIdx)
+                    else if (next == "--") consumedIndices.add(nextIdx)
                 } else if (prevNum != null && prevNum in 1..100) {
                     stressScore = prevNum
-                } else if (nextNum != null && nextNum in 1..100 && !next!!.startsWith("/")) {
+                    consumedIndices.add(prevIdx)
+                } else if (nextNum != null && nextNum in 1..100 && !next.startsWith("/")) {
                     stressScore = nextNum
+                    consumedIndices.add(nextIdx)
                 }
             }
 
             // Battery Header
             if (lower == "battery" || lower == "batería" || lower == "bateria") {
-                val next = cleanTokens.getOrNull(i + 1)
-                val prev = cleanTokens.getOrNull(i - 1)
+                val nextIdx = i + 1
+                val prevIdx = i - 1
+                val next = unconsumedTokenAt(nextIdx)
+                val prev = unconsumedTokenAt(prevIdx)
                 if (next != null && next != "--" && !next.startsWith("/")) {
                     val num = next.replace("%", "").trim().toIntOrNull()
-                    if (num != null && num in 1..100) ringBattery = num
+                    if (num != null && num in 1..100) {
+                        ringBattery = num
+                        consumedIndices.add(nextIdx)
+                    }
                 } else if (prev != null && prev != "--" && !prev.startsWith("/")) {
                     val num = prev.replace("%", "").trim().toIntOrNull()
-                    if (num != null && num in 1..100) ringBattery = num
+                    if (num != null && num in 1..100) {
+                        ringBattery = num
+                        consumedIndices.add(prevIdx)
+                    }
                 }
             }
 
             // Heart Rate Header
             if (lower == "hr" || lower == "fc" || lower == "heart rate" || lower == "frecuencia cardíaca" || lower == "frecuencia cardiaca") {
-                val candidates = listOfNotNull(cleanTokens.getOrNull(i + 1), cleanTokens.getOrNull(i + 2), cleanTokens.getOrNull(i - 1))
-                for (cand in candidates) {
+                val candidateIndices = listOf(i + 1, i + 2, i - 1)
+                for (candIdx in candidateIndices) {
+                    val cand = unconsumedTokenAt(candIdx) ?: continue
                     if (cand != "--" && !cand.startsWith("/")) {
                         val num = cand.replace("bpm", "").replace("lpm", "").trim().toIntOrNull()
                         if (num != null && num in 35..220) {
                             lastHr = num
+                            consumedIndices.add(candIdx)
                             break
                         }
                     }
@@ -295,11 +368,13 @@ object RingConnTelemetryParser {
 
             // Explicit Resting Heart Rate Header
             if (lower == "resting" || lower == "reposo" || lower == "en reposo" || lower == "resting hr" || lower == "fc reposo") {
-                val candidates = listOfNotNull(cleanTokens.getOrNull(i + 1), cleanTokens.getOrNull(i + 2), cleanTokens.getOrNull(i - 1))
-                for (cand in candidates) {
+                val candidateIndices = listOf(i + 1, i + 2, i - 1)
+                for (candIdx in candidateIndices) {
+                    val cand = unconsumedTokenAt(candIdx) ?: continue
                     val num = cand.replace("bpm", "").replace("lpm", "").trim().toIntOrNull()
                     if (num != null && num in 35..150) {
                         avgHr = num
+                        consumedIndices.add(candIdx)
                         break
                     }
                 }
@@ -307,11 +382,13 @@ object RingConnTelemetryParser {
 
             // Explicit Latest Heart Rate Header
             if (lower.contains("última") || lower.contains("ultima") || lower.contains("latest") || lower.contains("actual") || lower.contains("current")) {
-                val candidates = listOfNotNull(cleanTokens.getOrNull(i + 1), cleanTokens.getOrNull(i + 2), cleanTokens.getOrNull(i - 1))
-                for (cand in candidates) {
+                val candidateIndices = listOf(i + 1, i + 2, i - 1)
+                for (candIdx in candidateIndices) {
+                    val cand = unconsumedTokenAt(candIdx) ?: continue
                     val num = cand.replace("bpm", "").replace("lpm", "").trim().toIntOrNull()
                     if (num != null && num in 35..220) {
                         lastHr = num
+                        consumedIndices.add(candIdx)
                         break
                     }
                 }
@@ -319,62 +396,92 @@ object RingConnTelemetryParser {
 
             // SpO2 Header
             if (lower == "spo2" || lower == "blood oxygen" || lower == "oxígeno" || lower == "oxigeno") {
-                val next = cleanTokens.getOrNull(i + 1)
+                val nextIdx = i + 1
+                val next = unconsumedTokenAt(nextIdx)
                 if (next != null && next != "--" && !next.startsWith("/")) {
                     val num = next.replace("%", "").trim().toIntOrNull()
-                    if (num != null && num in 75..100) lastSpo2 = num
+                    if (num != null && num in 75..100) {
+                        lastSpo2 = num
+                        consumedIndices.add(nextIdx)
+                    }
                 }
             }
 
             // HRV Header
             if (lower == "hrv" || lower == "vfc" || lower == "variabilidad") {
-                val next = cleanTokens.getOrNull(i + 1)
+                val nextIdx = i + 1
+                val next = unconsumedTokenAt(nextIdx)
                 if (next != null && next != "--" && !next.startsWith("/")) {
                     val num = next.replace("ms", "").trim().toIntOrNull()
-                    if (num != null && num in 10..250) lastHrv = num
+                    if (num != null && num in 10..250) {
+                        lastHrv = num
+                        consumedIndices.add(nextIdx)
+                    }
                 }
             }
 
             // Individual units matching in DataIndicatorsWidget ([..., 70, bpm, 93, %, 59, ms])
             if (lower == "bpm" || lower == "lpm") {
-                val prev = cleanTokens.getOrNull(i - 1)
+                val prevIdx = i - 1
+                val prev = unconsumedTokenAt(prevIdx)
                 val num = prev?.replace(",", "")?.toIntOrNull()
-                if (num != null && num in 35..220) lastHr = num
+                if (num != null && num in 35..220) {
+                    lastHr = num
+                    consumedIndices.add(prevIdx)
+                }
             }
             if (token == "%") {
-                val prev = cleanTokens.getOrNull(i - 1)
+                val prevIdx = i - 1
+                val prev = unconsumedTokenAt(prevIdx)
                 val num = prev?.replace(",", "")?.toIntOrNull()
                 // If adjacent to ms or bpm, this is SpO2
-                val next = cleanTokens.getOrNull(i + 1)
-                val nextNext = cleanTokens.getOrNull(i + 2)
+                val next = unconsumedTokenAt(i + 1)
+                val nextNext = unconsumedTokenAt(i + 2)
                 if (num != null && num in 75..100 && (next == "ms" || nextNext == "ms" || cleanTokens.getOrNull(i - 2) == "bpm")) {
                     lastSpo2 = num
+                    consumedIndices.add(prevIdx)
                 }
             }
             if (lower == "ms") {
-                val prev = cleanTokens.getOrNull(i - 1)
+                val prevIdx = i - 1
+                val prev = unconsumedTokenAt(prevIdx)
                 val num = prev?.replace(",", "")?.toIntOrNull()
-                if (num != null && num in 10..250) lastHrv = num
+                if (num != null && num in 10..250) {
+                    lastHrv = num
+                    consumedIndices.add(prevIdx)
+                }
             }
 
             // Steps Header (strictly "steps" or "pasos", NEVER matching compound titles)
             if (lower == "steps" || lower == "pasos") {
-                val next = cleanTokens.getOrNull(i + 1)
+                val nextIdx = i + 1
+                val next = unconsumedTokenAt(nextIdx)
                 if (next == "--") {
                     liveSteps = 0
+                    consumedIndices.add(nextIdx)
                 } else if (next != null && !next.startsWith("/")) {
                     val num = next.replace(",", "").replace(".", "").trim().toIntOrNull()
-                    if (num != null && num in 0..150000) liveSteps = num
+                    if (num != null && num in 0..150000) {
+                        liveSteps = num
+                        consumedIndices.add(nextIdx)
+                    }
                 }
                 // Check for / targetSteps
-                val candidateSlash = cleanTokens.getOrNull(i + 2)
+                val candidateSlash = unconsumedTokenAt(i + 2)
                 if (candidateSlash == "/") {
-                    cleanTokens.getOrNull(i + 3)?.replace(",", "")?.replace(".", "")?.trim()?.toIntOrNull()?.let {
-                        if (it in 1000..100000) targetSteps = it
+                    unconsumedTokenAt(i + 3)?.replace(",", "")?.replace(".", "")?.trim()?.toIntOrNull()?.let {
+                        if (it in 1000..100000) {
+                            targetSteps = it
+                            consumedIndices.add(i + 2)
+                            consumedIndices.add(i + 3)
+                        }
                     }
                 } else if (candidateSlash?.startsWith("/") == true) {
-                    candidateSlash.removePrefix("/").replace(",", "").replace(".", "")?.trim()?.toIntOrNull()?.let {
-                        if (it in 1000..100000) targetSteps = it
+                    candidateSlash.removePrefix("/").replace(",", "").replace(".", "").trim().toIntOrNull()?.let {
+                        if (it in 1000..100000) {
+                            targetSteps = it
+                            consumedIndices.add(i + 2)
+                        }
                     }
                 }
             }
@@ -382,22 +489,34 @@ object RingConnTelemetryParser {
             // Calories Header (strictly "calories", "calories(kcal)", "calorías", "calorias", "calorías(kcal)", "kcal")
             // ONLY look forward immediately after the header; NEVER look backward (which holds target steps 6000)
             if (lower == "calories(kcal)" || lower == "calories" || lower == "calorías" || lower == "calorias" || lower == "calorías(kcal)" || lower == "kcal") {
-                val next = cleanTokens.getOrNull(i + 1)
+                val nextIdx = i + 1
+                val next = unconsumedTokenAt(nextIdx)
                 if (next == "--") {
                     liveCalorie = 0
+                    consumedIndices.add(nextIdx)
                 } else if (next != null && !next.startsWith("/")) {
                     val num = next.replace(",", "").replace(".", "").trim().toIntOrNull()
-                    if (num != null && num in 0..25000) liveCalorie = num
+                    if (num != null && num in 0..25000) {
+                        liveCalorie = num
+                        consumedIndices.add(nextIdx)
+                    }
                 }
                 // Check for / targetCalorie
-                val candidateSlash = cleanTokens.getOrNull(i + 2)
+                val candidateSlash = unconsumedTokenAt(i + 2)
                 if (candidateSlash == "/") {
-                    cleanTokens.getOrNull(i + 3)?.replace(",", "")?.replace(".", "")?.trim()?.toIntOrNull()?.let {
-                        if (it in 100..10000) targetCalorie = it
+                    unconsumedTokenAt(i + 3)?.replace(",", "")?.replace(".", "")?.trim()?.toIntOrNull()?.let {
+                        if (it in 100..10000) {
+                            targetCalorie = it
+                            consumedIndices.add(i + 2)
+                            consumedIndices.add(i + 3)
+                        }
                     }
                 } else if (candidateSlash?.startsWith("/") == true) {
-                    candidateSlash.removePrefix("/").replace(",", "").replace(".", "")?.trim()?.toIntOrNull()?.let {
-                        if (it in 100..10000) targetCalorie = it
+                    candidateSlash.removePrefix("/").replace(",", "").replace(".", "").trim().toIntOrNull()?.let {
+                        if (it in 100..10000) {
+                            targetCalorie = it
+                            consumedIndices.add(i + 2)
+                        }
                     }
                 }
             }
@@ -405,10 +524,10 @@ object RingConnTelemetryParser {
             // Temperature Header & Values (e.g. "Skin Temperature", "Temperatura cutánea", "Temperatura de la piel")
             if (lower.contains("temperature") || lower.contains("temperatura") || lower.contains("cutánea") || lower.contains("cutanea") || lower.contains("skin temp") || lower.contains("piel")) {
                 val candidates = listOfNotNull(
-                    cleanTokens.getOrNull(i + 1),
-                    cleanTokens.getOrNull(i + 2),
-                    cleanTokens.getOrNull(i + 3),
-                    cleanTokens.getOrNull(i - 1)
+                    unconsumedTokenAt(i + 1),
+                    unconsumedTokenAt(i + 2),
+                    unconsumedTokenAt(i + 3),
+                    unconsumedTokenAt(i - 1)
                 )
                 for (cand in candidates) {
                     SkinTemperatureGuard.offsetFrom(cand)?.let { skinTempOffset = it }
@@ -422,9 +541,9 @@ object RingConnTelemetryParser {
             // Baseline temperature (e.g. "Baseline 36.1°C", "Línea base 36.1°C", "Línea base: 36,4 °C")
             if (lower == "baseline" || lower == "línea base" || lower == "linea base" || lower.contains("base")) {
                 val candidates = listOfNotNull(
-                    cleanTokens.getOrNull(i + 1),
-                    cleanTokens.getOrNull(i + 2),
-                    cleanTokens.getOrNull(i - 1)
+                    unconsumedTokenAt(i + 1),
+                    unconsumedTokenAt(i + 2),
+                    unconsumedTokenAt(i - 1)
                 )
                 for (cand in candidates) {
                     BASELINE_TEMP_REGEX.find(cand)?.let {
@@ -467,7 +586,8 @@ object RingConnTelemetryParser {
                 foundDurations.add(total)
             }
         }
-        for (token in cleanTokens) {
+        for (idx in cleanTokens.indices) {
+            val token = unconsumedTokenAt(idx) ?: continue
             val d = parseDurationMinutes(token)
             if (d != null && d in 60..840 && !foundDurations.contains(d)) {
                 foundDurations.add(d)
