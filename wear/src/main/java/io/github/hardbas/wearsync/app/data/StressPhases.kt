@@ -41,4 +41,14 @@ object StressPhases {
     /** The highest measured block, or null when the day has no measured block. */
     fun peak(vitals: RingConnVitals): Int? =
         readings(vitals).maxOfOrNull { it.score }?.takeIf { it > 0 }
+
+    /**
+     * Only the blocks the ring measured, in day order.
+     *
+     * A block with no measurement can still gain one later that day, so it is omitted
+     * from the card rather than drawn as a placeholder: the row reappears by itself when
+     * a reading exists. An empty list means the day has no measured block at all.
+     */
+    fun measured(vitals: RingConnVitals): List<StressPhaseReading> =
+        readings(vitals).filter { it.score > 0 }
 }

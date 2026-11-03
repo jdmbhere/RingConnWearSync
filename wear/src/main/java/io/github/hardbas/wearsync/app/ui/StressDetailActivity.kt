@@ -1892,13 +1892,26 @@ private fun CardiacCoherenceBreathworkCard(vitals: RingConnVitals) {
 @Composable
 private fun CircadianStressBlocksCard(vitals: RingConnVitals) {
     val isSpanish = remember { Locale.getDefault().language.startsWith("es") }
-    val dawnVal = vitals.stressDawn
-    val mornVal = vitals.stressMorning
-    val aftVal = vitals.stressAfternoon
-    val nightVal = vitals.stressNight
+    // A block the ring has not measured yet can gain a reading later the same day, so it
+    // is omitted from the grid instead of printed as a placeholder: the row reappears by
+    // itself and the remaining cells close the gap.
+    val measuredBlocks = remember(vitals) { StressPhases.measured(vitals) }
+
+    fun blockTitle(phase: StressPhase): String = when (phase) {
+        StressPhase.DAWN -> if (isSpanish) "Madrugada" else "Dawn"
+        StressPhase.MORNING -> if (isSpanish) "Mañana" else "Morning"
+        StressPhase.AFTERNOON -> if (isSpanish) "Tarde" else "Afternoon"
+        StressPhase.NIGHT -> if (isSpanish) "Noche" else "Night"
+    }
+
+    fun blockHours(phase: StressPhase): String = when (phase) {
+        StressPhase.DAWN -> "00–06h"
+        StressPhase.MORNING -> "06–12h"
+        StressPhase.AFTERNOON -> "12–18h"
+        StressPhase.NIGHT -> "18–24h"
+    }
 
     fun blockColor(score: Int): Color = when {
-        score <= 0 -> LabelSilver
         score < 30 -> StressRelaxed
         score < 60 -> StressBalanced
         score < 80 -> StressModerate
@@ -1906,7 +1919,6 @@ private fun CircadianStressBlocksCard(vitals: RingConnVitals) {
     }
 
     fun blockStatus(score: Int): String = when {
-        score <= 0 -> "--"
         score < 30 -> if (isSpanish) "Calma" else "Calm"
         score < 60 -> if (isSpanish) "Normal" else "Normal"
         score < 80 -> if (isSpanish) "Medio" else "Med"
@@ -1966,66 +1978,47 @@ private fun CircadianStressBlocksCard(vitals: RingConnVitals) {
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Row 1: Madrugada (00-06h) & Mañana (06-12h)
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                CircadianBlockCell(
-                    modifier = Modifier.weight(1f),
-                    title = if (isSpanish) "Madrugada" else "Dawn",
-                    hours = "00–06h",
-                    score = dawnVal,
-                    status = blockStatus(dawnVal),
-                    color = blockColor(dawnVal)
+            if (measuredBlocks.isEmpty()) {
+                Text(
+                    text = stringResource(R.string.no_data),
+                    color = LabelSilver,
+                    fontSize = TextCaption
                 )
-                CircadianBlockCell(
-                    modifier = Modifier.weight(1f),
-                    title = if (isSpanish) "Mañana" else "Morning",
-                    hours = "06–12h",
-                    score = mornVal,
-                    status = blockStatus(mornVal),
-                    color = blockColor(mornVal)
-                )
-            }
+            } else {
+                measuredBlocks.chunked(2).forEachIndexed { index, row ->
+                    if (index > 0) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        row.forEach { reading ->
+                            CircadianBlockCell(
+                                modifier = Modifier.weight(1f),
+                                title = blockTitle(reading.phase),
+                                hours = blockHours(reading.phase),
+                                score = reading.score,
+                                status = blockStatus(reading.score),
+                                color = blockColor(reading.score)
+                            )
+                        }
+                    }
+                }
 
-            Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
-            // Row 2: Tarde (12-18h) & Noche (18-24h)
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                CircadianBlockCell(
-                    modifier = Modifier.weight(1f),
-                    title = if (isSpanish) "Tarde" else "Afternoon",
-                    hours = "12–18h",
-                    score = aftVal,
-                    status = blockStatus(aftVal),
-                    color = blockColor(aftVal)
-                )
-                CircadianBlockCell(
-                    modifier = Modifier.weight(1f),
-                    title = if (isSpanish) "Noche" else "Night",
-                    hours = "18–24h",
-                    score = nightVal,
-                    status = blockStatus(nightVal),
-                    color = blockColor(nightVal)
+                Text(
+                    text = if (isSpanish) {
+                        "Divide tu carga autonómica en 4 franjas de 6h para detectar si tu estrés ocurre dormido o durante el día."
+                    } else {
+                        "Splits autonomic load into 4x6h blocks to spot nocturnal vs daytime stress."
+                    },
+                    fontSize = 9.sp,
+                    color = LabelSilver,
+                    lineHeight = 12.sp
                 )
             }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Text(
-                text = if (isSpanish) {
-                    "Divide tu carga autonómica en 4 franjas de 6h para detectar si tu estrés ocurre dormido o durante el día."
-                } else {
-                    "Splits autonomic load into 4x6h blocks to spot nocturnal vs daytime stress."
-                },
-                fontSize = 9.sp,
-                color = LabelSilver,
-                lineHeight = 12.sp
-            )
         }
     }
 }
@@ -2074,7 +2067,7 @@ private fun CircadianBlockCell(
                 verticalAlignment = Alignment.Bottom
             ) {
                 Text(
-                    text = if (score > 0) "$score" else "--",
+                    text = "$score",
                     fontSize = TextBody,
                     style = TabularNums,
                     color = Color.White,

@@ -112,14 +112,9 @@ class DailySummaryTileService : TileService() {
             val kcalFraction = (vitals.liveCalorie.toFloat() / kcalTarget).coerceIn(0.05f, 1f)
 
             // Units survive a missing reading, the number does not: the design
-            // writes "--m" and "--km", not a bare dash.
+            // writes "--m", not a bare dash.
             val activeText = if (vitals.activeMinutes > 0) "${vitals.activeMinutes}m" else "--m"
             val kcalText = if (vitals.liveCalorie > 0) "${vitals.liveCalorie}" else "--"
-            val kmText = if (vitals.distanceKm > 0f) {
-                String.format(Locale.US, "%.1f", vitals.distanceKm) + "km"
-            } else {
-                "--km"
-            }
 
             val clickable = TileShell.launchDetail(packageName, DETAIL_ACTIVITY)
 
@@ -213,8 +208,7 @@ class DailySummaryTileService : TileService() {
                             Locale.getDefault(),
                             strings.text(R.string.tile_steps_sub),
                             activeText,
-                            kcalText,
-                            kmText
+                            kcalText
                         ),
                         style = TileType.sub()
                     )
@@ -235,9 +229,7 @@ class DailySummaryTileService : TileService() {
                         listOf(
                             TileShell.text(activeText, TileType.pill(TileAccents.steps.first())),
                             TileShell.pillSeparator(),
-                            TileShell.text(kcalText, TileType.pill(TileAccents.kcal.first())),
-                            TileShell.pillSeparator(),
-                            TileShell.text(kmText, TileType.pill(TileAccents.teal))
+                            TileShell.text(kcalText, TileType.pill(TileAccents.kcal.first()))
                         )
                     ),
                     clickable = clickable

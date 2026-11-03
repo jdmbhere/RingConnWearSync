@@ -33,7 +33,7 @@ class DailySummaryTileContractTest {
         when (resId) {
             R.string.steps_short -> "Steps"
             R.string.details -> "Details"
-            R.string.tile_steps_sub -> "%1\$s · %2\$s · %3\$s"
+            R.string.tile_steps_sub -> "%1\$s · %2\$s"
             else -> "s$resId"
         }
     }
@@ -78,14 +78,13 @@ class DailySummaryTileContractTest {
             .filter { TileTestKit.dpOf(it.width) == TileGeometry.SPARK_BAR_WIDTH }
             .filter { it.modifiers?.background?.color != null }
 
-    /** 8 420 steps against the 10 000 default goal, 320 kcal of 500, 6.1 km. */
+    /** 8 420 steps against the 10 000 default goal, 320 kcal of 500. */
     private val live = RingConnVitals(
         liveSteps = 8420,
         targetSteps = 10_000,
         liveCalorie = 320,
         targetCalorie = 500,
         activeMinutes = 42,
-        distanceKm = 6.1f,
         refreshTimestamp = now()
     )
 
@@ -122,17 +121,19 @@ class DailySummaryTileContractTest {
     }
 
     @Test
-    fun `pill carries active minutes, calories and distance in their own accents`() {
+    fun `pill carries active minutes and calories in their own accents`() {
         // Without history the pill is the only line these readings have.
         val texts = TileTestKit.texts(liveRoot)
         val active = texts.first { it.text?.value == "42m" }
         val kcal = texts.first { it.text?.value == "320" }
-        val km = texts.first { it.text?.value == "6.1km" }
 
         assertEquals(TileType.PILL, active.fontStyle?.size?.value)
         assertEquals(TileAccents.steps.first(), active.fontStyle?.color?.argb)
         assertEquals(TileAccents.kcal.first(), kcal.fontStyle?.color?.argb)
-        assertEquals(TileAccents.teal, km.fontStyle?.color?.argb)
+        assertTrue(
+            "distance can never be measured on this watch, so the face must not draw it",
+            texts.none { it.text?.value?.contains("km") == true }
+        )
     }
 
     @Test
@@ -218,8 +219,8 @@ class DailySummaryTileContractTest {
             .filterIsInstance<LayoutElementBuilders.Text>()
             .mapNotNull { it.text?.value }
         assertEquals(
-            "the pill falls back to dashes but keeps its unit letters and its dot separators",
-            listOf("--m", "·", "--", "·", "--km"),
+            "the pill falls back to dashes but keeps its unit letters and its dot separator",
+            listOf("--m", "·", "--"),
             pillTexts
         )
     }
@@ -328,7 +329,7 @@ class DailySummaryTileContractTest {
     fun `with a trend row the daytime readings move to the sub and the pill is the action`() {
         val root = rootFor(live, sevenDays())
         val texts = TileTestKit.texts(root).mapNotNull { it.text?.value }
-        assertTrue("the sub carries the three readings, had $texts", texts.any { it == "42m · 320 · 6.1km" })
+        assertTrue("the sub carries the two measured readings, had $texts", texts.any { it == "42m · 320" })
         assertTrue("the pill is the one action, had $texts", texts.any { it == "Details" })
         assertTrue(
             "the pill launches the detail activity",

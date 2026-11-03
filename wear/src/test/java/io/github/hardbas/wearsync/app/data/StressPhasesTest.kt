@@ -56,6 +56,22 @@ class StressPhasesTest {
     }
 
     @Test
+    fun `measured drops the blocks the ring did not record`() {
+        val measured = StressPhases.measured(vitals(0, 40, 0, 25))
+
+        assertEquals(2, measured.size)
+        assertEquals(StressPhase.MORNING, measured[0].phase)
+        assertEquals(40, measured[0].score)
+        assertEquals(StressPhase.NIGHT, measured[1].phase)
+        assertEquals(25, measured[1].score)
+    }
+
+    @Test
+    fun `measured is empty when the day has no measured block`() {
+        assertTrue(StressPhases.measured(vitals(0, 0, 0, 0)).isEmpty())
+    }
+
+    @Test
     fun `peak is the highest measured block and null when nothing was measured`() {
         assertEquals(47, StressPhases.peak(vitals(18, 32, 47, 21)))
         assertNull(StressPhases.peak(vitals(0, 0, 0, 0)))

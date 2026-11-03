@@ -30,6 +30,18 @@ watch label is too long for the space its surface leaves.
 - **The vitals screen no longer calls the breath rate an estimate.** It was described as derived
   from pulse and HRV; it is now the ring's own record, and the card shows `--` until the ring sends
   one.
+- **Distance and basal calories are gone from the watch.** Neither can ever carry a measurement on
+  this device: the ring writes no `DistanceRecord` at all (the Health Connect Distance category holds
+  only Google Fit and the handset), and its basal record stores the energy of a half hour — about
+  36 kcal — in a type defined as a rate per day, so the plausibility rule rejects every record. The
+  two rows left the activity tile, the daily activity detail card, and the two dead permissions left
+  `AndroidManifest.xml` and the core Health Connect set, so the grant screen asks for less. The
+  fields stay on the phone-to-watch wire model and hold `0`, so the contract is unchanged.
+- **A field that can still be measured is omitted instead of shown as `--`.** The three sleep-phase
+  heart rates, the bed efficiency and the four circadian stress blocks are unknown only until the
+  first measurement arrives, so their rows are left out entirely and reappear by themselves; a night
+  or a day with none of them degrades to a short honest line instead of a grid of dashes. The primary
+  metrics keep their `--`, which still means "the phone has not synced yet".
 
 ## [1.9.39] - 2026-10-24
 

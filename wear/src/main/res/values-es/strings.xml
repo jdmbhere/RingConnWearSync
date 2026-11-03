@@ -86,7 +86,7 @@
 
     <!-- Cajón dentro del tile (S12): la píldora de la esfera lo abre, la suya abre la app. -->
     <!-- Trend row (S14): the face carries the trend the drawer used to hide. -->
-    <string name="tile_steps_sub">%1$s · %2$s · %3$s</string>
+    <string name="tile_steps_sub">%1$s · %2$s</string>
 
     <!-- Temperature Strings (Spanish) -->
     <string name="skin_temp">Temperatura Cutánea</string>
