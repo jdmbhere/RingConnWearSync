@@ -317,11 +317,12 @@ object RingConnTelemetryReader {
 
         // 1. Heart Rate
         if (!hrResponse.isNullOrEmpty()) {
-            // Strictly prioritize RingConn smart ring origin over Samsung Health / Watch PPG
+            // Strictly require RingConn smart ring origin so Watch PPG (Samsung Health)
+            // on a tattooed wrist never pollutes or overrides RingConn heart rate.
             val ringConnHr = hrResponse.filter {
                 it.metadata.dataOrigin.packageName == RINGCONN_PKG
             }
-            val effectiveHrRecords = ringConnHr.ifEmpty { hrResponse }
+            val effectiveHrRecords = ringConnHr
             if (ringConnHr.isNotEmpty()) {
                 hasRingConnOrigin = true
             }
@@ -636,8 +637,10 @@ object RingConnTelemetryReader {
             return@coroutineScope null
         }
 
-        // Fill remaining missing metrics from continuity cache
-        val finalHr = if (lastBpm > 0) lastBpm else existing.lastHeartRate
+        // Fill remaining missing metrics from continuity cache, but keep lastHeartRate = 0 when
+        // Health Connect has no direct RingConn HR sample so Smart Merge never mistakes a cached
+        // fallback for a fresh Health Connect HR reading.
+        val finalHr = lastBpm
         val finalAvgHr = if (avgBpm > 0) avgBpm else (if (restingBpm > 0) restingBpm else finalHr)
         val finalSpo2 = if (lastSpo2 > 0) lastSpo2 else existing.lastSpo2
         val finalAvgSpo2 = if (avgSpo2 > 0) avgSpo2 else finalSpo2
@@ -957,7 +960,7 @@ object RingConnTelemetryReader {
             ringBattery = ringBattery,
             isCharging = existing.isCharging,
             isConnected = true,
-            refreshTimestamp = maxOf(latestHrTimestamp, latestSpo2Timestamp, latestHrvTimestamp).takeIf { it > 0 } ?: now.epochSecond,
+            refreshTimestamp = resolveBiometricRefreshTimestamp(latestHrTimestamp, latestSpo2Timestamp, latestHrvTimestamp),
             minHeartRate = finalMinHr,
             maxHeartRate = finalMaxHr,
             zone1Mins = finalZ1,
@@ -1163,7 +1166,7 @@ object RingConnTelemetryReader {
             }
 
             // Smart Timestamp Merge: Compare widget sample time vs Health Connect sample time
-            val hcHrIsFresher = hcVitals != null && hcVitals.lastHeartRate > 0 && hcVitals.refreshTimestamp > widgetVitals.refreshTimestamp
+            val hcHrIsFresher = shouldPrioritizeHealthConnectHr(hcVitals, widgetVitals)
             if (hcHrIsFresher) {
                 Log.i(TAG, "Smart Merge: Health Connect HR (${hcVitals!!.lastHeartRate} bpm @ ${hcVitals.refreshTimestamp}) is FRESHER than widget (${widgetVitals.lastHeartRate} bpm @ ${widgetVitals.refreshTimestamp}) -> prioritizing Health Connect HR")
             } else {
@@ -1328,7 +1331,11 @@ object RingConnTelemetryReader {
                 ringBattery = finalBattery,
                 sleepScore = finalSleepScore,
                 stressScore = finalStressScore,
-                refreshTimestamp = maxOf(widgetVitals.refreshTimestamp, hcVitals?.refreshTimestamp ?: 0L),
+                refreshTimestamp = if (hcHrIsFresher) {
+                    maxOf(widgetVitals.refreshTimestamp, hcVitals?.refreshTimestamp ?: 0L)
+                } else {
+                    widgetVitals.refreshTimestamp
+                },
                 minHeartRate = minHr,
                 maxHeartRate = maxHr,
                 zone1Mins = z1,
@@ -1398,6 +1405,9 @@ object RingConnTelemetryReader {
             val finalSleepScore = if (keepCachedSleep && cached.sleepScore > 0) cached.sleepScore else hcVitals.sleepScore
 
             val finalHcVitals = hcVitals.copy(
+                lastHeartRate = if (hcVitals.lastHeartRate > 0) hcVitals.lastHeartRate else cached.lastHeartRate,
+                avgHeartRate = if (hcVitals.avgHeartRate > 0) hcVitals.avgHeartRate else cached.avgHeartRate,
+                refreshTimestamp = if (hcVitals.refreshTimestamp > 0L) hcVitals.refreshTimestamp else cached.refreshTimestamp,
                 sleepScore = finalSleepScore,
                 sleepDeepMins = finalDeep,
                 sleepRemMins = finalRem,
@@ -1519,12 +1529,12 @@ object RingConnTelemetryReader {
 
         prefs.edit().apply {
             putLong(KEY_CACHE_EPOCH_DAY, todayEpochDay)
-            putInt(KEY_LASTLY_HR, vitals.lastHeartRate)
-            putInt(KEY_AVG_HR, vitals.avgHeartRate)
-            putInt(KEY_LASTLY_SPO, vitals.lastSpo2)
-            putInt(KEY_AVG_SPO, vitals.avgSpo2)
-            putInt(KEY_LASTLY_HRV, vitals.lastHrv)
-            putInt(KEY_AVG_HRV, vitals.avgHrv)
+            if (vitals.lastHeartRate > 0) putInt(KEY_LASTLY_HR, vitals.lastHeartRate)
+            if (vitals.avgHeartRate > 0) putInt(KEY_AVG_HR, vitals.avgHeartRate)
+            if (vitals.lastSpo2 > 0) putInt(KEY_LASTLY_SPO, vitals.lastSpo2)
+            if (vitals.avgSpo2 > 0) putInt(KEY_AVG_SPO, vitals.avgSpo2)
+            if (vitals.lastHrv > 0) putInt(KEY_LASTLY_HRV, vitals.lastHrv)
+            if (vitals.avgHrv > 0) putInt(KEY_AVG_HRV, vitals.avgHrv)
             putInt(KEY_SLEEP_SCORE, vitals.sleepScore)
             putInt(KEY_ACTIVITY_SCORE, vitals.activityScore)
             putInt(KEY_ACTIVE_MINUTES, vitals.activeMinutes)
@@ -1536,7 +1546,7 @@ object RingConnTelemetryReader {
             putInt(KEY_ELECTRIC, vitals.ringBattery)
             putBoolean(KEY_IS_CHARGE, vitals.isCharging)
             putBoolean(KEY_IS_CONNECTED, vitals.isConnected)
-            putInt(KEY_REFRESH_TIMESTAMP, vitals.refreshTimestamp.toInt())
+            if (vitals.refreshTimestamp > 0L) putInt(KEY_REFRESH_TIMESTAMP, vitals.refreshTimestamp.toInt())
             putInt(KEY_MIN_HR, vitals.minHeartRate)
             putInt(KEY_MAX_HR, vitals.maxHeartRate)
             putInt(KEY_ZONE1_MINS, vitals.zone1Mins)
@@ -1638,6 +1648,33 @@ object RingConnTelemetryReader {
 
     fun readFromPreferences(prefs: SharedPreferences): RingConnVitals = parseFromPreferences(prefs)
     fun readFromPreferences(context: Context): RingConnVitals = parseFromPreferences(context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE))
+
+    /**
+     * Returns the latest biometric sample epoch second from Health Connect, or 0L when
+     * Health Connect returned no HR/SpO2/HRV samples (never fabricating wall-clock now).
+     */
+    fun resolveBiometricRefreshTimestamp(
+        latestHrTimestamp: Long,
+        latestSpo2Timestamp: Long,
+        latestHrvTimestamp: Long
+    ): Long = maxOf(latestHrTimestamp, latestSpo2Timestamp, latestHrvTimestamp)
+
+    /**
+     * Determines whether Health Connect HR should override Widget HR during Smart Merge.
+     * Requires a direct Health Connect HR reading (> 0) and a real biometric sample timestamp (> 0L).
+     */
+    fun shouldPrioritizeHealthConnectHr(
+        hcVitals: RingConnVitals?,
+        widgetVitals: RingConnVitals
+    ): Boolean {
+        if (hcVitals == null || hcVitals.lastHeartRate <= 0 || hcVitals.refreshTimestamp <= 0L) {
+            return false
+        }
+        if (widgetVitals.lastHeartRate <= 0) {
+            return true
+        }
+        return hcVitals.refreshTimestamp > widgetVitals.refreshTimestamp
+    }
 }
 
 /**

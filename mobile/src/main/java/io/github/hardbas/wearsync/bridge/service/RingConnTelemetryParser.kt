@@ -120,6 +120,20 @@ object RingConnTelemetryParser {
         }
 
         var parsedWidgetTimestamp: Long? = null
+        var hasExplicitLatestHr = false
+        var hasExplicitLatestSpo2 = false
+        var hasExplicitLatestHrv = false
+
+        fun isAverageLabel(s: String?): Boolean {
+            val l = s?.lowercase()?.trim() ?: return false
+            return l == "average" || l == "promedio" || l == "media" || l == "avg" ||
+                l == "resting" || l == "reposo" || l == "en reposo"
+        }
+
+        fun isLatestLabel(s: String?): Boolean {
+            val l = s?.lowercase()?.trim() ?: return false
+            return l == "latest" || l == "última" || l == "ultima" || l == "actual" || l == "current"
+        }
 
         // 2. Token-by-token contextual parsing
         for (i in cleanTokens.indices) {
@@ -359,6 +373,7 @@ object RingConnTelemetryParser {
                         val num = cand.replace("bpm", "").replace("lpm", "").trim().toIntOrNull()
                         if (num != null && num in 35..220) {
                             lastHr = num
+                            hasExplicitLatestHr = true
                             consumedIndices.add(candIdx)
                             break
                         }
@@ -380,14 +395,21 @@ object RingConnTelemetryParser {
                 }
             }
 
-            // Explicit Latest Heart Rate Header
-            if (lower.contains("última") || lower.contains("ultima") || lower.contains("latest") || lower.contains("actual") || lower.contains("current")) {
+            // Explicit Latest Heart Rate Header (strictly anchored to BPM/LPM units so SpO2/HRV "Latest" never steals Average values)
+            if (!hasExplicitLatestHr && (lower.contains("última") || lower.contains("ultima") || lower.contains("latest") || lower.contains("actual") || lower.contains("current"))) {
                 val candidateIndices = listOf(i + 1, i + 2, i - 1)
                 for (candIdx in candidateIndices) {
                     val cand = unconsumedTokenAt(candIdx) ?: continue
-                    val num = cand.replace("bpm", "").replace("lpm", "").trim().toIntOrNull()
+                    val candLower = cand.lowercase()
+                    val unitToken = cleanTokens.getOrNull(candIdx + 1)?.lowercase()
+                    val postUnitLabel = cleanTokens.getOrNull(candIdx + 2)
+                    val hasExplicitBpmUnit = candLower.contains("bpm") || candLower.contains("lpm") ||
+                        ((unitToken == "bpm" || unitToken == "lpm") && !isAverageLabel(postUnitLabel))
+                    if (!hasExplicitBpmUnit) continue
+                    val num = candLower.replace("bpm", "").replace("lpm", "").trim().toIntOrNull()
                     if (num != null && num in 35..220) {
                         lastHr = num
+                        hasExplicitLatestHr = true
                         consumedIndices.add(candIdx)
                         break
                     }
@@ -402,6 +424,7 @@ object RingConnTelemetryParser {
                     val num = next.replace("%", "").trim().toIntOrNull()
                     if (num != null && num in 75..100) {
                         lastSpo2 = num
+                        hasExplicitLatestSpo2 = true
                         consumedIndices.add(nextIdx)
                     }
                 }
@@ -415,18 +438,25 @@ object RingConnTelemetryParser {
                     val num = next.replace("ms", "").trim().toIntOrNull()
                     if (num != null && num in 10..250) {
                         lastHrv = num
+                        hasExplicitLatestHrv = true
                         consumedIndices.add(nextIdx)
                     }
                 }
             }
 
-            // Individual units matching in DataIndicatorsWidget ([..., 70, bpm, 93, %, 59, ms])
+            // Individual units matching in DataIndicatorsWidget ([..., 70, bpm, 93, %, 59, ms] and Latest/Average pairs)
             if (lower == "bpm" || lower == "lpm") {
                 val prevIdx = i - 1
                 val prev = unconsumedTokenAt(prevIdx)
                 val num = prev?.replace(",", "")?.toIntOrNull()
+                val nextLabel = cleanTokens.getOrNull(i + 1)
                 if (num != null && num in 35..220) {
-                    lastHr = num
+                    if (isAverageLabel(nextLabel) || (hasExplicitLatestHr && !isLatestLabel(nextLabel))) {
+                        avgHr = num
+                    } else {
+                        lastHr = num
+                        hasExplicitLatestHr = true
+                    }
                     consumedIndices.add(prevIdx)
                 }
             }
@@ -434,20 +464,36 @@ object RingConnTelemetryParser {
                 val prevIdx = i - 1
                 val prev = unconsumedTokenAt(prevIdx)
                 val num = prev?.replace(",", "")?.toIntOrNull()
-                // If adjacent to ms or bpm, this is SpO2
+                val nextLabel = cleanTokens.getOrNull(i + 1)
                 val next = unconsumedTokenAt(i + 1)
                 val nextNext = unconsumedTokenAt(i + 2)
-                if (num != null && num in 75..100 && (next == "ms" || nextNext == "ms" || cleanTokens.getOrNull(i - 2) == "bpm")) {
-                    lastSpo2 = num
-                    consumedIndices.add(prevIdx)
+                if (num != null && num in 75..100) {
+                    if (isAverageLabel(nextLabel)) {
+                        avgSpo2 = num
+                        consumedIndices.add(prevIdx)
+                    } else if (isLatestLabel(nextLabel) || next == "ms" || nextNext == "ms" || cleanTokens.getOrNull(i - 2) == "bpm") {
+                        if (hasExplicitLatestSpo2 && !isLatestLabel(nextLabel)) {
+                            avgSpo2 = num
+                        } else {
+                            lastSpo2 = num
+                            hasExplicitLatestSpo2 = true
+                        }
+                        consumedIndices.add(prevIdx)
+                    }
                 }
             }
             if (lower == "ms") {
                 val prevIdx = i - 1
                 val prev = unconsumedTokenAt(prevIdx)
                 val num = prev?.replace(",", "")?.toIntOrNull()
+                val nextLabel = cleanTokens.getOrNull(i + 1)
                 if (num != null && num in 10..250) {
-                    lastHrv = num
+                    if (isAverageLabel(nextLabel) || (hasExplicitLatestHrv && !isLatestLabel(nextLabel))) {
+                        avgHrv = num
+                    } else {
+                        lastHrv = num
+                        hasExplicitLatestHrv = true
+                    }
                     consumedIndices.add(prevIdx)
                 }
             }

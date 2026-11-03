@@ -462,5 +462,54 @@ class RingConnVitalsMergeTest {
         assertEquals(360 to 200, mediumDim)
         assertEquals(276 to 200, compactDim)
     }
+
+    @Test
+    fun parser_doesNotOverwriteHeartRateWithHrvAverage_inDataIndicatorsWidget() {
+        // Exact token sequence emitted by RingConn's DataIndicatorsWidgetReceiver / DataIndicatorsLargeWidgetReceiver
+        val enTokens = listOf(
+            "Vital Signs", "10:42 PM",
+            "HR", "76", "bpm", "Latest", "73", "bpm", "Average",
+            "SpO2", "95", "%", "Latest", "92", "%", "Average",
+            "HRV", "53", "ms", "Latest", "43", "ms", "Average"
+        )
+        val parsedEn = RingConnTelemetryParser.parseTokens(enTokens, RingConnVitals())
+        assertEquals(76, parsedEn.lastHeartRate)
+        assertEquals(73, parsedEn.avgHeartRate)
+        assertEquals(95, parsedEn.lastSpo2)
+        assertEquals(92, parsedEn.avgSpo2)
+        assertEquals(53, parsedEn.lastHrv)
+        assertEquals(43, parsedEn.avgHrv)
+
+        val esTokens = listOf(
+            "Signos vitales", "10:42 PM",
+            "FC", "70", "lpm", "Última", "66", "lpm", "Promedio",
+            "SpO2", "96", "%", "Última", "94", "%", "Promedio",
+            "VFC", "51", "ms", "Última", "43", "ms", "Promedio"
+        )
+        val parsedEs = RingConnTelemetryParser.parseTokens(esTokens, RingConnVitals())
+        assertEquals(70, parsedEs.lastHeartRate)
+        assertEquals(66, parsedEs.avgHeartRate)
+        assertEquals(96, parsedEs.lastSpo2)
+        assertEquals(94, parsedEs.avgSpo2)
+        assertEquals(51, parsedEs.lastHrv)
+        assertEquals(43, parsedEs.avgHrv)
+    }
+
+    @Test
+    fun smartMerge_doesNotPrioritizeHealthConnect_whenHcHasNoBiometricTimestampOrNoDirectHr() {
+        val widgetVitals = RingConnVitals(lastHeartRate = 76, refreshTimestamp = 1793677320L)
+
+        // When HC only returned steps (no HR/SpO2/HRV samples), biometric timestamp is 0L
+        assertEquals(0L, RingConnTelemetryReader.resolveBiometricRefreshTimestamp(0L, 0L, 0L))
+
+        val hcStepsOnly = RingConnVitals(lastHeartRate = 0, liveSteps = 7570, refreshTimestamp = 0L)
+        assertFalse(RingConnTelemetryReader.shouldPrioritizeHealthConnectHr(hcStepsOnly, widgetVitals))
+
+        val hcWithStaleOrZeroTimestamp = RingConnVitals(lastHeartRate = 43, refreshTimestamp = 0L)
+        assertFalse(RingConnTelemetryReader.shouldPrioritizeHealthConnectHr(hcWithStaleOrZeroTimestamp, widgetVitals))
+
+        val hcWithFresherRingConnSample = RingConnVitals(lastHeartRate = 74, refreshTimestamp = 1793677600L)
+        assertTrue(RingConnTelemetryReader.shouldPrioritizeHealthConnectHr(hcWithFresherRingConnSample, widgetVitals))
+    }
 }
 
