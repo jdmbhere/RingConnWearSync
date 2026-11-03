@@ -36,7 +36,7 @@ protolayout = { group = "androidx.wear.protolayout", name = "protolayout", versi
 protolayout-material = { group = "androidx.wear.protolayout", name = "protolayout-material", version.ref = "protolayout" }
 protolayout-expression = { group = "androidx.wear.protolayout", name = "protolayout-expression", version.ref = "protolayout" }
 wear-watchface-complications-data-source = { group = "androidx.wear.watchface", name = "watchface-complications-data-source-ktx", version = "1.2.1" }
-guava = { group = "com.google.guava", name = "guava", version = "33.3.1-android" }
+guava = { group = "com.google.guava", name = "guava", version = "33.7.2-android" }
 concurrent-futures = { group = "androidx.concurrent", name = "concurrent-futures", version = "1.2.0" }
 compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling", version = "1.7.6" }
 compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview", version = "1.7.6" }
