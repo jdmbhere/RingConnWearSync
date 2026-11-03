@@ -141,6 +141,25 @@ class MeasuredVitalsPolicyTest {
         assertTrue(MeasuredVitalsPolicy.ringSamples(emptyList<String>()) { it == RINGCONN }.isEmpty())
     }
 
+    @Test
+    fun theRingsHalfHourlyBasalAmountIsNotAPersonAndStaysUnknown() {
+        // Observed on device: the ring writes 36 kcal every half hour into a field defined as
+        // a daily rate. 48 x 36 = 1728, so 36 is an interval amount wearing the wrong unit.
+        assertTrue(
+            "36 kcal/day cannot be a resting metabolism, so it must not reach the watch",
+            !MeasuredVitalsPolicy.basalRatePlausible(36)
+        )
+        assertTrue(!MeasuredVitalsPolicy.basalRatePlausible(0))
+        assertTrue(!MeasuredVitalsPolicy.basalRatePlausible(5000))
+    }
+
+    @Test
+    fun aBasalRateAPersonCouldHaveSurvives() {
+        assertTrue(MeasuredVitalsPolicy.basalRatePlausible(1728))
+        assertTrue(MeasuredVitalsPolicy.basalRatePlausible(800))
+        assertTrue(MeasuredVitalsPolicy.basalRatePlausible(3500))
+    }
+
     private companion object {
         // Taken from production so a rename or a change of the ring's package breaks this test
         // instead of letting it keep passing against a copy of the string.

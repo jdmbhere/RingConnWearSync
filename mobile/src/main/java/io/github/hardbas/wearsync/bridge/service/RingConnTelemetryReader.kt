@@ -555,10 +555,21 @@ object RingConnTelemetryReader {
             if (ringConnBmr.isNotEmpty()) {
                 hasRingConnOrigin = true
             }
-            // The record carries kcal per day, which is what the daily summary adds to
-            // active calories; accruing it by the clock would be arithmetic again.
+            // The ring writes one basal record every half hour carrying the energy of that
+            // interval (~36 kcal) into a field defined as a rate per day. Read literally the
+            // record says the wearer burns 36 kcal a day, so the rate has to pass a sanity
+            // gate before it is published as a measurement.
             ringConnBmr.maxByOrNull { it.time }?.let {
-                measuredBasalCalories = it.basalMetabolicRate.inKilocaloriesPerDay.roundToInt()
+                val kcalPerDay = it.basalMetabolicRate.inKilocaloriesPerDay.roundToInt()
+                if (MeasuredVitalsPolicy.basalRatePlausible(kcalPerDay)) {
+                    measuredBasalCalories = kcalPerDay
+                } else {
+                    Log.w(
+                        TAG,
+                        "Ignoring implausible ring basal rate: $kcalPerDay kcal/day " +
+                            "(${ringConnBmr.size} ring records today)"
+                    )
+                }
             }
         }
 
