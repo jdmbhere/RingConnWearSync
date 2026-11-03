@@ -396,10 +396,18 @@ class RingConnComplicationProvider : SuspendingComplicationDataSourceService() {
             // range of its own, so without this the card loses its range for as
             // long as Health Connect stays silent. Rollover has already emptied
             // the stored values, which is what keeps yesterday out of today.
+            val storedRange = DailyHrRange.sanitizeStored(
+                stored = DailyHrRange(prefs.getInt("min_hr", 0), prefs.getInt("max_hr", 0)),
+                reported = DailyHrRange(vitals.minHeartRate, vitals.maxHeartRate),
+                currentHr = vitals.lastHeartRate,
+                lastHrv = vitals.lastHrv,
+                avgHrv = vitals.avgHrv
+            )
             val dayRange = DailyHrRange.widen(
-                DailyHrRange(prefs.getInt("min_hr", 0), prefs.getInt("max_hr", 0)),
+                storedRange,
                 DailyHrRange(vitals.minHeartRate, vitals.maxHeartRate),
-                DailyHrRange.observed(vitals.lastHeartRate, vitals.refreshTimestamp, todayEpochDay)
+                DailyHrRange.observed(vitals.lastHeartRate, vitals.refreshTimestamp, todayEpochDay),
+                DailyHrRange.observed(vitals.avgHeartRate, vitals.refreshTimestamp, todayEpochDay)
             )
             val merged = vitals.copy(minHeartRate = dayRange.min, maxHeartRate = dayRange.max)
 

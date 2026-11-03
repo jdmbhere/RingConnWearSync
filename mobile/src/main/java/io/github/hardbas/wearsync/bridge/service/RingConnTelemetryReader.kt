@@ -1221,7 +1221,10 @@ object RingConnTelemetryReader {
                 hcVitals?.avgHrv?.takeIf { it > 0 } ?: cached.avgHrv
             }
 
-            val minHr = hcVitals?.minHeartRate?.takeIf { it > 0 } ?: cached.minHeartRate
+            val cachedMinHrSanitized = cached.minHeartRate.takeIf { cMin ->
+                cMin > 0 && !( (cMin == finalHrv || cMin == finalAvgHrv) && finalHr > cMin + 10 )
+            } ?: 0
+            val minHr = hcVitals?.minHeartRate?.takeIf { it > 0 } ?: cachedMinHrSanitized
             val maxHr = hcVitals?.maxHeartRate?.takeIf { it > 0 } ?: cached.maxHeartRate
             val z1 = hcVitals?.zone1Mins?.takeIf { it > 0 } ?: cached.zone1Mins
             val z2 = hcVitals?.zone2Mins?.takeIf { it > 0 } ?: cached.zone2Mins

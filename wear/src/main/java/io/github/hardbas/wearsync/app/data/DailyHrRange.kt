@@ -74,5 +74,26 @@ data class DailyHrRange(val min: Int = 0, val max: Int = 0) {
             val highs = ranges.map { it.max }.filter { it > 0 }
             return DailyHrRange(lows.minOrNull() ?: 0, highs.maxOrNull() ?: 0)
         }
+
+        /**
+         * Discards a stored minimum (and matching single-value maximum) that was seeded by
+         * an HRV reading (e.g. 43 ms) before the widget parser anchored Latest/Average units,
+         * when the phone's reported range does not confirm that minimum and live HR is > 10 bpm higher.
+         */
+        fun sanitizeStored(
+            stored: DailyHrRange,
+            reported: DailyHrRange,
+            currentHr: Int,
+            lastHrv: Int,
+            avgHrv: Int
+        ): DailyHrRange {
+            val isMinHrvContaminated = stored.min > 0 &&
+                (stored.min == lastHrv || stored.min == avgHrv) &&
+                reported.min != stored.min &&
+                currentHr > stored.min + 10
+            if (!isMinHrvContaminated) return stored
+            val cleanMax = if (stored.max == stored.min) 0 else stored.max
+            return DailyHrRange(min = 0, max = cleanMax)
+        }
     }
 }

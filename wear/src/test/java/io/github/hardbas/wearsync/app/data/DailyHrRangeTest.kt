@@ -129,6 +129,27 @@ class DailyHrRangeTest {
         assertEquals(DailyHrRange.UNKNOWN, DailyHrRange.observed(72, 0L, todayEpochDay, zone))
     }
 
+    @Test
+    fun `a stored minimum matching HRV is discarded when phone reports no such HR minimum`() {
+        // Stored watch cache had min=43 from an earlier HRV-contaminated scrape (avgHrv=43),
+        // while real HR is 74 (avgHr=73) and phone reports minHeartRate=0.
+        val poisonedStored = DailyHrRange(min = 43, max = 76)
+        val sanitized = DailyHrRange.sanitizeStored(
+            stored = poisonedStored,
+            reported = DailyHrRange.UNKNOWN,
+            currentHr = 74,
+            lastHrv = 39,
+            avgHrv = 43
+        )
+        val widened = DailyHrRange.widen(
+            sanitized,
+            DailyHrRange.UNKNOWN,
+            DailyHrRange.observed(74, noon(today), todayEpochDay, zone),
+            DailyHrRange.observed(73, noon(today), todayEpochDay, zone)
+        )
+        assertEquals(DailyHrRange(73, 76), widened)
+    }
+
     private fun noon(day: LocalDate): Long =
         day.atTime(12, 0).atZone(zone).toEpochSecond()
 }
