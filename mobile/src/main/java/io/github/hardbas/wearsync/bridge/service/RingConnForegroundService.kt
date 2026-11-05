@@ -146,16 +146,6 @@ class RingConnForegroundService : Service() {
         val wakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "RingConnWearSync:SyncWakeLock")
         wakeLock?.acquire(15_000L)
         try {
-            // Poke RingConn Flutter background worker
-            try {
-                val bgIntent = Intent("es.antonborri.home_widget.action.BACKGROUND").apply {
-                    setPackage("com.gdjztech.ringconn")
-                }
-                sendBroadcast(bgIntent)
-            } catch (e: Exception) {
-                Log.d(TAG, "HomeWidget background broadcast error: ${e.message}")
-            }
-
             val vitals = RingConnTelemetryReader.readBestAvailableVitalsSuspend(this@RingConnForegroundService)
             val success = WearDataSyncService(this@RingConnForegroundService).syncVitalsToWatch(vitals, force = force)
             val noteText = if (success) {
@@ -238,15 +228,6 @@ class RingConnForegroundService : Service() {
                 val wakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "RingConnWearSync:SyncWakeLock")
                 wakeLock?.acquire(15_000L)
                 try {
-                    try {
-                        val bgIntent = Intent("es.antonborri.home_widget.action.BACKGROUND").apply {
-                            setPackage("com.gdjztech.ringconn")
-                        }
-                        appCtx.sendBroadcast(bgIntent)
-                    } catch (e: Exception) {
-                        Log.d(TAG, "HomeWidget background broadcast error: ${e.message}")
-                    }
-
                     val vitals = RingConnTelemetryReader.readBestAvailableVitalsSuspend(appCtx)
                     val success = WearDataSyncService(appCtx).syncVitalsToWatch(vitals, force = force)
                     Log.d(TAG, "syncTelemetryNow completed: success=$success")

@@ -34,6 +34,7 @@ class RingConnAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         instance = this
         Log.i(TAG, "RingConnAccessibilityService connected and active!")
+        RingConnForegroundService.start(this)
 
         val info = serviceInfo ?: AccessibilityServiceInfo()
         info.apply {

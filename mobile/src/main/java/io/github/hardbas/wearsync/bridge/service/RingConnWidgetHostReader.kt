@@ -25,6 +25,13 @@ object RingConnWidgetHostReader {
     const val HOST_ID = 4488
     private const val PREFS_NAME = "ringconn_widget_bindings"
     private const val PUSH_DEBOUNCE_MS = 2_500L
+    /**
+     * RingConn's BaseAppWidgetReceiver enforces a 180-second cooldown (180_000 ms) between
+     * internal HomeWidgetBackgroundReceiver broadcasts inside onUpdate(). Keeping our
+     * system_server bind poke strictly above 180s ensures every poke triggers a fresh
+     * headless Flutter background sync instead of hitting the cooldown guard.
+     */
+    const val BACKGROUND_POKE_COOLDOWN_MS = 185_000L
 
     private val RINGCONN_PROVIDERS = listOf(
         ComponentName("com.gdjztech.ringconn", "com.gdjztech.remotewidget.MediumHomeAppWidgetReceiver"),
@@ -70,6 +77,7 @@ object RingConnWidgetHostReader {
     @Volatile private var persistentListeningActive = false
     @Volatile private var inReadCycle = false
     @Volatile private var lastPushTriggerElapsedMs = 0L
+    @Volatile private var lastBackgroundPokeElapsedMs = 0L
     @Volatile private var onPushCallback: (() -> Unit)? = null
     private val boundWidgetMap = mutableMapOf<ComponentName, Int>()
     private var pendingBindWidgetId: Int = -1
@@ -218,6 +226,55 @@ object RingConnWidgetHostReader {
                 vitals.skinTempBaseline > 0f
     }
 
+    fun shouldPokeBackgroundWorker(
+        nowElapsedMs: Long,
+        lastPokeElapsedMs: Long,
+        cooldownMs: Long = BACKGROUND_POKE_COOLDOWN_MS
+    ): Boolean {
+        if (lastPokeElapsedMs <= 0L) return true
+        return (nowElapsedMs - lastPokeElapsedMs) >= cooldownMs
+    }
+
+    /**
+     * Triggers RingConn's BaseAppWidgetReceiver.onUpdate() via Android's system_server (uid 1000).
+     *
+     * Direct broadcasts to es.antonborri.home_widget.HomeWidgetBackgroundReceiver fail because
+     * that receiver has android:exported="false" in RingConn's manifest, and updateAppWidgetOptions()
+     * only triggers onAppWidgetOptionsChanged() without invoking HomeWidgetBackgroundReceiver.
+     * By transiently binding a widget ID through AppWidgetManager, system_server dispatches
+     * ACTION_APPWIDGET_UPDATE (onUpdate()) into RingConn, which internally broadcasts
+     * es.antonborri.home_widget.action.BACKGROUND from RingConn's own UID.
+     */
+    private suspend fun pokeRingConnBackgroundWorkerIfEligible(
+        appWidgetManager: AppWidgetManager,
+        host: AppWidgetHost
+    ) {
+        val nowElapsed = SystemClock.elapsedRealtime()
+        if (!shouldPokeBackgroundWorker(nowElapsed, lastBackgroundPokeElapsedMs)) {
+            return
+        }
+        val targetProvider = RINGCONN_PROVIDERS.firstOrNull { comp ->
+            appWidgetManager.installedProviders.any { it.provider == comp }
+        } ?: return
+
+        var pokeWidgetId = -1
+        try {
+            pokeWidgetId = host.allocateAppWidgetId()
+            val bound = appWidgetManager.bindAppWidgetIdIfAllowed(pokeWidgetId, targetProvider)
+            if (bound) {
+                lastBackgroundPokeElapsedMs = nowElapsed
+                Log.i(TAG, "Poked RingConn BaseAppWidgetReceiver.onUpdate() via system_server (temp widgetId=$pokeWidgetId)")
+                delay(350L)
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "Background worker poke error: ${e.message}")
+        } finally {
+            if (pokeWidgetId != -1) {
+                runCatching { host.deleteAppWidgetId(pokeWidgetId) }
+            }
+        }
+    }
+
     /**
      * Evaluates whether Phase 3 (toggling updateAppWidgetOptions to force Jetpack Glance
      * to recompose RemoteViews) must run.
@@ -287,15 +344,8 @@ object RingConnWidgetHostReader {
         try {
             Log.i(TAG, "Starting RingConn WidgetHost extraction...")
 
-            // Trigger RingConn Flutter background worker to write fresh vitals before reading RemoteViews
-            try {
-                val bgIntent = Intent("es.antonborri.home_widget.action.BACKGROUND").apply {
-                    setPackage("com.gdjztech.ringconn")
-                }
-                context.sendBroadcast(bgIntent)
-            } catch (e: Exception) {
-                Log.d(TAG, "HomeWidget background broadcast error: ${e.message}")
-            }
+            // Trigger RingConn Flutter background worker via system_server onUpdate() before reading RemoteViews
+            pokeRingConnBackgroundWorkerIfEligible(appWidgetManager, host)
 
             val activeBindings = mutableListOf<Pair<ComponentName, Int>>()
             var hadNewAllocation = false
