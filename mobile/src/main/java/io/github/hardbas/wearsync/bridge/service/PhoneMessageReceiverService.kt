@@ -1,6 +1,5 @@
 package io.github.hardbas.wearsync.bridge.service
 
-import android.content.Intent
 import android.util.Log
 import com.google.android.gms.wearable.MessageEvent
 import com.google.android.gms.wearable.Wearable
@@ -9,7 +8,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 
@@ -44,45 +42,20 @@ class PhoneMessageReceiverService : WearableListenerService() {
         scope.launch {
             sendSyncStatusToWatch("START")
             try {
+                // Passively scrape if the user already has RingConn open in the foreground,
+                // never launching RingConn's Activity on screen automatically.
                 if (RingConnAccessibilityService.isRunning()) {
-                    val scraped = RingConnAccessibilityService.instance?.wakeAndScrapeRingConnApp()
-                    val vitals = scraped ?: RingConnTelemetryReader.readBestAvailableVitalsSuspend(this@PhoneMessageReceiverService)
-                    WearDataSyncService(this@PhoneMessageReceiverService).syncVitalsToWatch(vitals, force = true)
-                    Log.i(TAG, "Synced RingConn vitals via AccessibilityService: HR=${vitals.lastHeartRate}, SpO2=${vitals.lastSpo2}")
-                    sendSyncStatusToWatch("SUCCESS")
-                    return@launch
+                    RingConnAccessibilityService.instance?.scrapeWindowContent(persist = true)
                 }
 
-                val intent = packageManager.getLaunchIntentForPackage("com.gdjztech.ringconn")
-                if (intent != null) {
-                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
-                    startActivity(intent)
-                    Log.i(TAG, "Dispatched activation routine to RingConn to sync BLE data")
-
-                    delay(4000L)
-
-                    // Collapse back to home
-                    val homeIntent = Intent(Intent.ACTION_MAIN).apply {
-                        addCategory(Intent.CATEGORY_HOME)
-                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                    }
-                    startActivity(homeIntent)
-
-                    // Brief delay for RingConn widget inflation
-                    delay(1000L)
-
-                    // Read best available vitals (prioritizes direct RingConn Glance widgets)
-                    val vitals = RingConnTelemetryReader.readBestAvailableVitalsSuspend(this@PhoneMessageReceiverService)
-
-                    // Force immediate sync to Watch (bypassing battery throttle)
-                    WearDataSyncService(this@PhoneMessageReceiverService).syncVitalsToWatch(vitals, force = true)
-                    Log.i(TAG, "Forced fresh RingConn vitals sync to Watch: HR=${vitals.lastHeartRate}, SpO2=${vitals.lastSpo2}")
-                    sendSyncStatusToWatch("SUCCESS")
-                } else {
-                    sendSyncStatusToWatch("ERROR")
-                }
+                // Read best available vitals silently (pokes RingConn's background widget worker
+                // via system_server onUpdate() and merges Health Connect + WidgetHost + cache).
+                val vitals = RingConnTelemetryReader.readBestAvailableVitalsSuspend(this@PhoneMessageReceiverService)
+                val success = WearDataSyncService(this@PhoneMessageReceiverService).syncVitalsToWatch(vitals, force = true)
+                Log.i(TAG, "Silent RingConn vitals sync to Watch: HR=${vitals.lastHeartRate}, SpO2=${vitals.lastSpo2}, success=$success")
+                sendSyncStatusToWatch(if (success) "SUCCESS" else "ERROR")
             } catch (e: Exception) {
-                Log.e(TAG, "Error triggering sync on RingConn", e)
+                Log.e(TAG, "Error triggering silent sync on RingConn", e)
                 sendSyncStatusToWatch("ERROR")
             }
         }
