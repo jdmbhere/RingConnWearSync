@@ -248,56 +248,53 @@ object RingConnTelemetryParser {
             }
 
             // Stage Durations (Deep / REM / Light / Awake)
-            if (lower == "deep" || lower == "profundo" || lower == "sueño profundo") {
-                val nextIdx = i + 1
-                val prevIdx = i - 1
-                val nextDur = parseDurationMinutes(unconsumedTokenAt(nextIdx))
-                val prevDur = parseDurationMinutes(unconsumedTokenAt(prevIdx))
-                if (nextDur != null && nextDur in 1..600) {
-                    parsedDeep = nextDur
-                    consumedIndices.add(nextIdx)
-                } else if (prevDur != null && prevDur in 1..600) {
-                    parsedDeep = prevDur
-                    consumedIndices.add(prevIdx)
+            fun extractStageDuration(headerIdx: Int, maxMins: Int): Int? {
+                for (candIdx in listOf(headerIdx + 1, headerIdx + 2, headerIdx - 1)) {
+                    val dur = parseDurationMinutes(unconsumedTokenAt(candIdx))
+                    if (dur != null && dur in 1..maxMins) {
+                        consumedIndices.add(candIdx)
+                        if (candIdx == headerIdx + 2) {
+                            val midToken = unconsumedTokenAt(headerIdx + 1)
+                            if (midToken != null && Regex("""^\d{1,3}(?:[.,]\d+)?\s*%$""").matches(midToken)) {
+                                consumedIndices.add(headerIdx + 1)
+                            }
+                        }
+                        return dur
+                    }
+                }
+                return null
+            }
+
+            if (lower == "deep" || lower == "deep sleep" || lower == "profundo" || lower == "sueño profundo" || lower == "sueno profundo") {
+                extractStageDuration(i, 600)?.let { parsedDeep = it }
+            } else if (Regex("""^(?:deep(?:\s+sleep)?|sue[ñn]o\s+profundo|profundo)\b""").containsMatchIn(lower)) {
+                parseDurationMinutes(token)?.takeIf { it in 1..600 }?.let {
+                    parsedDeep = it
+                    consumedIndices.add(i)
                 }
             }
-            if (lower == "rem" || lower == "fase rem") {
-                val nextIdx = i + 1
-                val prevIdx = i - 1
-                val nextDur = parseDurationMinutes(unconsumedTokenAt(nextIdx))
-                val prevDur = parseDurationMinutes(unconsumedTokenAt(prevIdx))
-                if (nextDur != null && nextDur in 1..600) {
-                    parsedRem = nextDur
-                    consumedIndices.add(nextIdx)
-                } else if (prevDur != null && prevDur in 1..600) {
-                    parsedRem = prevDur
-                    consumedIndices.add(prevIdx)
+            if (lower == "rem" || lower == "rem sleep" || lower == "fase rem" || lower == "sueño rem" || lower == "sueno rem") {
+                extractStageDuration(i, 600)?.let { parsedRem = it }
+            } else if (Regex("""^(?:rem(?:\s+sleep)?|fase\s+rem|sue[ñn]o\s+rem)\b""").containsMatchIn(lower)) {
+                parseDurationMinutes(token)?.takeIf { it in 1..600 }?.let {
+                    parsedRem = it
+                    consumedIndices.add(i)
                 }
             }
-            if (lower == "light" || lower == "ligero" || lower == "sueño ligero") {
-                val nextIdx = i + 1
-                val prevIdx = i - 1
-                val nextDur = parseDurationMinutes(unconsumedTokenAt(nextIdx))
-                val prevDur = parseDurationMinutes(unconsumedTokenAt(prevIdx))
-                if (nextDur != null && nextDur in 1..600) {
-                    parsedLight = nextDur
-                    consumedIndices.add(nextIdx)
-                } else if (prevDur != null && prevDur in 1..600) {
-                    parsedLight = prevDur
-                    consumedIndices.add(prevIdx)
+            if (lower == "light" || lower == "light sleep" || lower == "ligero" || lower == "sueño ligero" || lower == "sueno ligero") {
+                extractStageDuration(i, 600)?.let { parsedLight = it }
+            } else if (Regex("""^(?:light(?:\s+sleep)?|sue[ñn]o\s+ligero|ligero)\b""").containsMatchIn(lower)) {
+                parseDurationMinutes(token)?.takeIf { it in 1..600 }?.let {
+                    parsedLight = it
+                    consumedIndices.add(i)
                 }
             }
-            if (lower == "awake" || lower == "despierto") {
-                val nextIdx = i + 1
-                val prevIdx = i - 1
-                val nextDur = parseDurationMinutes(unconsumedTokenAt(nextIdx))
-                val prevDur = parseDurationMinutes(unconsumedTokenAt(prevIdx))
-                if (nextDur != null && nextDur in 1..300) {
-                    parsedAwake = nextDur
-                    consumedIndices.add(nextIdx)
-                } else if (prevDur != null && prevDur in 1..300) {
-                    parsedAwake = prevDur
-                    consumedIndices.add(prevIdx)
+            if (lower == "awake" || lower == "awake time" || lower == "despierto" || lower == "tiempo despierto") {
+                extractStageDuration(i, 300)?.let { parsedAwake = it }
+            } else if (Regex("""^(?:awake(?:\s+time)?|tiempo\s+despierto|despierto)\b""").containsMatchIn(lower)) {
+                parseDurationMinutes(token)?.takeIf { it in 1..300 }?.let {
+                    parsedAwake = it
+                    consumedIndices.add(i)
                 }
             }
 
@@ -622,57 +619,12 @@ object RingConnTelemetryParser {
             }
         }
 
-        // 4. Sleep Duration & Stages Reconciliation
-        val foundDurations = mutableListOf<Int>()
-        for (m in SLEEP_DURATION_REGEX.findAll(fullText)) {
-            val h = m.groupValues[1].toIntOrNull() ?: 0
-            val min = m.groupValues[2].toIntOrNull() ?: 0
-            val total = h * 60 + min
-            if (total in 60..840) {
-                foundDurations.add(total)
-            }
-        }
-        for (idx in cleanTokens.indices) {
-            val token = unconsumedTokenAt(idx) ?: continue
-            val d = parseDurationMinutes(token)
-            if (d != null && d in 60..840 && !foundDurations.contains(d)) {
-                foundDurations.add(d)
-            }
-        }
-
+        // 4. Sleep Stages Reconciliation (Measured stages only — never fabricate from a standalone duration)
         if (parsedDeep > 0 || parsedRem > 0 || parsedLight > 0) {
             sleepDeepMins = parsedDeep
             sleepRemMins = parsedRem
             sleepLightMins = parsedLight
             if (parsedAwake > 0) sleepAwakeMins = parsedAwake
-        } else if (foundDurations.isNotEmpty()) {
-            val parsedSleepTotalMins = foundDurations.maxOrNull()!!
-            val currentAsleep = sleepDeepMins + sleepRemMins + sleepLightMins
-            if (currentAsleep == 0) {
-                val deep = (parsedSleepTotalMins * 0.22).roundToInt()
-                val rem = (parsedSleepTotalMins * 0.23).roundToInt()
-                val light = parsedSleepTotalMins - deep - rem
-                sleepDeepMins = deep
-                sleepRemMins = rem
-                sleepLightMins = light
-            } else if (currentAsleep < parsedSleepTotalMins) {
-                val factor = parsedSleepTotalMins.toDouble() / currentAsleep.toDouble()
-                val scaledDeep = (sleepDeepMins * factor).roundToInt()
-                val scaledRem = (sleepRemMins * factor).roundToInt()
-                val scaledLight = parsedSleepTotalMins - scaledDeep - scaledRem
-                sleepDeepMins = scaledDeep
-                sleepRemMins = scaledRem
-                sleepLightMins = scaledLight
-            }
-        }
-
-        if (sleepScore == 0 && (sleepDeepMins + sleepRemMins + sleepLightMins) > 0) {
-            val totalMins = sleepDeepMins + sleepRemMins + sleepLightMins
-            val durScore = ((totalMins.toDouble() / 450.0).coerceAtMost(1.0) * 55.0)
-            val deepScore = if (sleepDeepMins > 0) ((sleepDeepMins.toDouble() / 75.0).coerceAtMost(1.0) * 23.0) else 18.0
-            val remScore = if (sleepRemMins > 0) ((sleepRemMins.toDouble() / 85.0).coerceAtMost(1.0) * 22.0) else 17.0
-            val awakePenalty = (sleepAwakeMins.toDouble() / 12.0).coerceAtMost(12.0)
-            sleepScore = (durScore + deepScore + remScore - awakePenalty).roundToInt().coerceIn(45, 98)
         }
 
         // 5. Midnight Rollover Guard: If widget timestamp belongs to a previous calendar day,

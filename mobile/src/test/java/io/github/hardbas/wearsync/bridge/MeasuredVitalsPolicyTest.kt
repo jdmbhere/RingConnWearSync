@@ -76,6 +76,40 @@ class MeasuredVitalsPolicyTest {
         assertEquals(0, MeasuredVitalsPolicy.sleepEfficiencyPct(asleepMinutes = 0, inBedMinutes = 480))
     }
 
+    // --- S4 / S8: inBedMinutes, the efficiency denominator -------------------------------
+
+    @Test
+    fun inBedSpansBedTimeToFinalAwakeningSoItIncludesSleepLatency() {
+        // A real night the ring itself scored as 92 %: asleep 412 (deep 107 + rem 60 +
+        // light 245), awake 20, bed time 00:23 to the final awakening 07:50 -> 447 minutes
+        // in bed. RingConn shows 18 minutes awake and still divides by the full span, so
+        // the latency to fall asleep stays in the denominator.
+        val inBed = MeasuredVitalsPolicy.inBedMinutes(
+            nocturnalSpanMinutes = 447L,
+            asleepMinutes = 412,
+            awakeMinutes = 20
+        )
+        assertEquals(447, inBed)
+        assertEquals(92, MeasuredVitalsPolicy.sleepEfficiencyPct(asleepMinutes = 412, inBedMinutes = inBed))
+
+        // Dropping the latency, asleep + awake = 432, inflated that same night to 95 %.
+        assertEquals(95, MeasuredVitalsPolicy.sleepEfficiencyPct(asleepMinutes = 412, inBedMinutes = 432))
+    }
+
+    @Test
+    fun inBedFallsBackToTheStageSumWhenTheSpanCannotContainTheSleep() {
+        // No span at all, and a span shorter than the sleep it measured, both fall back
+        // instead of publishing an efficiency above 100 %.
+        assertEquals(
+            432,
+            MeasuredVitalsPolicy.inBedMinutes(nocturnalSpanMinutes = 0L, asleepMinutes = 412, awakeMinutes = 20)
+        )
+        assertEquals(
+            432,
+            MeasuredVitalsPolicy.inBedMinutes(nocturnalSpanMinutes = 400L, asleepMinutes = 412, awakeMinutes = 20)
+        )
+    }
+
     // --- S5: computed sleep score --------------------------------------------------------
 
     @Test

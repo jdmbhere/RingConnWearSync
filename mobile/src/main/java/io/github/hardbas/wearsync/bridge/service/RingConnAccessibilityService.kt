@@ -130,9 +130,12 @@ class RingConnAccessibilityService : AccessibilityService() {
 
         val hasMeaningfulData = parsedVitals.lastHeartRate > 0 ||
                 parsedVitals.sleepScore > 0 ||
+                (parsedVitals.sleepDeepMins + parsedVitals.sleepRemMins + parsedVitals.sleepLightMins) > 0 ||
                 parsedVitals.activityScore > 0 ||
                 parsedVitals.liveSteps > 0 ||
                 parsedVitals.lastSpo2 > 0 ||
+                parsedVitals.lastHrv > 0 ||
+                parsedVitals.stressScore > 0 ||
                 parsedVitals.skinTempOffset != 0f
 
         if (hasMeaningfulData) {

@@ -624,40 +624,17 @@ object RingConnTelemetryReader {
                         remMins = SleepStageMerger.minutesOf(epochTimeline, SleepSessionRecord.STAGE_TYPE_REM)
                         lightMins = SleepStageMerger.minutesOf(epochTimeline, SleepSessionRecord.STAGE_TYPE_LIGHT)
 
+                        val mergedAwakeMins =
+                            SleepStageMerger.minutesOf(epochTimeline, SleepSessionRecord.STAGE_TYPE_AWAKE) +
+                                SleepStageMerger.minutesOf(epochTimeline, SleepSessionRecord.STAGE_TYPE_OUT_OF_BED)
                         val totalAsleep = deepMins + remMins + lightMins
 
-                        val firstAsleepEpoch = epochTimeline.indexOfFirst {
-                            it == SleepSessionRecord.STAGE_TYPE_DEEP ||
-                            it == SleepSessionRecord.STAGE_TYPE_REM ||
-                            it == SleepSessionRecord.STAGE_TYPE_LIGHT
-                        }
-                        val lastAsleepEpoch = epochTimeline.indexOfLast {
-                            it == SleepSessionRecord.STAGE_TYPE_DEEP ||
-                            it == SleepSessionRecord.STAGE_TYPE_REM ||
-                            it == SleepSessionRecord.STAGE_TYPE_LIGHT
-                        }
-
-                        // WASO: awakenings between sleep onset and final morning awakening
-                        val wasoEpochs = if (firstAsleepEpoch in 0..lastAsleepEpoch) {
-                            (firstAsleepEpoch..lastAsleepEpoch).count { ep ->
-                                epochTimeline[ep] == SleepSessionRecord.STAGE_TYPE_AWAKE ||
-                                epochTimeline[ep] == SleepSessionRecord.STAGE_TYPE_OUT_OF_BED
-                            }
-                        } else 0
-                        val wasoMins = (wasoEpochs * 30.0 / 60.0).roundToInt().toLong()
-
-                        val latencyMins = if (firstAsleepEpoch > 0) {
-                            (firstAsleepEpoch * 30.0 / 60.0).roundToInt().toLong()
-                        } else 0L
-
-                        val inBedAwakeMins = if (umbrellaMins > totalAsleep) {
-                            umbrellaMins - totalAsleep + 1L
-                        } else 0L
-
-                        awakeMins = if (inBedAwakeMins in 1L..90L) {
-                            inBedAwakeMins
+                        awakeMins = if (mergedAwakeMins > 0L) {
+                            mergedAwakeMins
+                        } else if (umbrellaMins > totalAsleep) {
+                            umbrellaMins - totalAsleep
                         } else {
-                            (wasoMins + latencyMins + 1L).coerceIn(1L, 90L)
+                            0L
                         }
                     }
 
@@ -782,6 +759,9 @@ object RingConnTelemetryReader {
             ?: longSleepSessions.maxByOrNull { it.endTime }
             ?: allSleepRecords.maxByOrNull { Duration.between(it.startTime, it.endTime).toMinutes() }
 
+        val nocturnalStart: Instant? = nocturnalSessions.minOfOrNull { it.startTime } ?: primarySleepSession?.startTime
+        val nocturnalEnd: Instant? = nocturnalSessions.maxOfOrNull { it.endTime } ?: primarySleepSession?.endTime
+
         val napSessions = allSleepRecords.filter { session ->
             session != primarySleepSession &&
             !nocturnalSessions.contains(session) &&
@@ -797,8 +777,9 @@ object RingConnTelemetryReader {
 
         val localZone = ZoneId.systemDefault()
         var computedBedtimeWindow = ""
-        if (habitualSleepSession != null) {
-            val sleepOnsetLocal = habitualSleepSession.startTime.atZone(localZone)
+        val bedtimeOnsetInstant = nocturnalStart ?: habitualSleepSession?.startTime
+        if (bedtimeOnsetInstant != null) {
+            val sleepOnsetLocal = bedtimeOnsetInstant.atZone(localZone)
             val windowStart = sleepOnsetLocal.minusMinutes(15)
             val windowEnd = sleepOnsetLocal.plusMinutes(30)
             val bedFmt = DateTimeFormatter.ofPattern("HH:mm")
@@ -812,15 +793,15 @@ object RingConnTelemetryReader {
             ringSpo2.ifEmpty { spo2Response }
         } else emptyList()
 
-        val hasTodaySleep = primarySleepSession != null || finalSleep > 0 || (finalDeep + finalRem + finalLight) > 0
-        val nocturnalSpo2Records = if (primarySleepSession != null) {
+        val hasTodaySleep = nocturnalStart != null || finalSleep > 0 || (finalDeep + finalRem + finalLight) > 0
+        val nocturnalSpo2Records = if (nocturnalStart != null && nocturnalEnd != null) {
             effectiveSpo2Records.filter { rec ->
-                rec.time >= primarySleepSession.startTime && rec.time <= primarySleepSession.endTime
+                rec.time >= nocturnalStart && rec.time <= nocturnalEnd
             }
         } else emptyList()
 
-        val sleepDurationHours: Float = if (primarySleepSession != null) {
-            val mins = Duration.between(primarySleepSession.startTime, primarySleepSession.endTime).toMinutes().toFloat()
+        val sleepDurationHours: Float = if (nocturnalStart != null && nocturnalEnd != null) {
+            val mins = Duration.between(nocturnalStart, nocturnalEnd).toMinutes().toFloat()
             mins / 60.0f
         } else {
             7.0f
@@ -854,18 +835,18 @@ object RingConnTelemetryReader {
         } else emptyList()
 
         val allHrSamples = effectiveHrRecords.flatMap { it.samples }
-        if (primarySleepSession != null && allHrSamples.isNotEmpty()) {
+        if (nocturnalStart != null && nocturnalEnd != null && allHrSamples.isNotEmpty()) {
             val sleepHrSamples = allHrSamples.filter {
-                it.time >= primarySleepSession.startTime && it.time <= primarySleepSession.endTime
+                it.time >= nocturnalStart && it.time <= nocturnalEnd
             }
             // Compare the evening before bed and the morning after it, not every
             // sample the two-day window can see: an unbounded "awake" mean would
             // be yesterday's whole day and flatten the dip.
-            val dipWindowStart = primarySleepSession.startTime.minus(Duration.ofHours(3))
-            val dipWindowEnd = primarySleepSession.endTime.plus(Duration.ofHours(3))
+            val dipWindowStart = nocturnalStart.minus(Duration.ofHours(3))
+            val dipWindowEnd = nocturnalEnd.plus(Duration.ofHours(3))
             val awakeHrSamples = allHrSamples.filter {
-                (it.time >= dipWindowStart && it.time < primarySleepSession.startTime) ||
-                    (it.time > primarySleepSession.endTime && it.time <= dipWindowEnd)
+                (it.time >= dipWindowStart && it.time < nocturnalStart) ||
+                    (it.time > nocturnalEnd && it.time <= dipWindowEnd)
             }
             if (sleepHrSamples.isNotEmpty() && awakeHrSamples.isNotEmpty()) {
                 val sleepMeanHr = sleepHrSamples.map { it.beatsPerMinute.toDouble() }.average()
@@ -903,13 +884,21 @@ object RingConnTelemetryReader {
         val finalStandHours = if (computedStandHours > 0) computedStandHours else existing.standHours
 
         // 5. Heart Rate per Sleep Stage & Bed Efficiency (SleepSyncModel)
+        // RingConn writes one SleepSessionRecord per stage interval alongside a coarse SLEEPING
+        // umbrella session, so collect stages across all nocturnalSessions rather than only
+        // primarySleepSession (whose single stage is STAGE_TYPE_SLEEPING).
         var computedHrDeep = 0
         var computedHrRem = 0
         var computedHrLight = 0
-        if (primarySleepSession != null && primarySleepSession.stages.isNotEmpty() && allHrSamples.isNotEmpty()) {
-            val deepStages = primarySleepSession.stages.filter { it.stage == SleepSessionRecord.STAGE_TYPE_DEEP }
-            val remStages = primarySleepSession.stages.filter { it.stage == SleepSessionRecord.STAGE_TYPE_REM }
-            val lightStages = primarySleepSession.stages.filter { it.stage == SleepSessionRecord.STAGE_TYPE_LIGHT }
+        val allNocturnalStages = if (nocturnalSessions.isNotEmpty()) {
+            nocturnalSessions.flatMap { it.stages }
+        } else {
+            primarySleepSession?.stages ?: emptyList()
+        }
+        if (allNocturnalStages.isNotEmpty() && allHrSamples.isNotEmpty()) {
+            val deepStages = allNocturnalStages.filter { it.stage == SleepSessionRecord.STAGE_TYPE_DEEP }
+            val remStages = allNocturnalStages.filter { it.stage == SleepSessionRecord.STAGE_TYPE_REM }
+            val lightStages = allNocturnalStages.filter { it.stage == SleepSessionRecord.STAGE_TYPE_LIGHT }
 
             val deepHrList = allHrSamples.filter { s -> deepStages.any { s.time >= it.startTime && s.time <= it.endTime } }
             val remHrList = allHrSamples.filter { s -> remStages.any { s.time >= it.startTime && s.time <= it.endTime } }
@@ -928,7 +917,14 @@ object RingConnTelemetryReader {
         val finalHrPhaseRem = MeasuredVitalsPolicy.hrPhase(computedHrRem)
 
         val totalAsleepM = finalDeep + finalRem + finalLight
-        val totalInBedM = totalAsleepM + finalAwake
+        // RingConn's time in bed runs from bed time to the final awakening, so the latency to
+        // fall asleep belongs in the efficiency denominator even though the ring does not
+        // count it as Awake. Anchoring it on the nocturnal span is what makes the number we
+        // publish agree with the one the ring shows for the same night.
+        val nocturnalSpanM = if (nocturnalStart != null && nocturnalEnd != null) {
+            Duration.between(nocturnalStart, nocturnalEnd).toMinutes()
+        } else 0L
+        val totalInBedM = MeasuredVitalsPolicy.inBedMinutes(nocturnalSpanM, totalAsleepM, finalAwake)
         // Efficiency is asleep over in bed, from real stages. A sleep score is not an
         // efficiency and adding five points to it was arithmetic pretending to be one.
         val finalSleepEfficiencyPct = MeasuredVitalsPolicy.sleepEfficiencyPct(totalAsleepM, totalInBedM)
@@ -1328,7 +1324,9 @@ object RingConnTelemetryReader {
             val mergedHrRem = MeasuredVitalsPolicy.hrPhase(hcVitals?.hrPhaseRem?.takeIf { it > 0 } ?: cached.hrPhaseRem)
 
             val totalAsleepM = mergedDeep + mergedRem + mergedLight
-            val totalInBedM = totalAsleepM + mergedAwake
+            // No nocturnal span survives into this merge, so the denominator falls back to
+            // the stage sum; a real efficiency from the reader is preferred just below.
+            val totalInBedM = MeasuredVitalsPolicy.inBedMinutes(0L, totalAsleepM, mergedAwake)
             val mergedSleepEff = hcVitals?.sleepEfficiencyPct?.takeIf { it > 0 }
                 ?: MeasuredVitalsPolicy.sleepEfficiencyPct(totalAsleepM, totalInBedM)
 
