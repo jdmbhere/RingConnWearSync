@@ -92,8 +92,13 @@ class RingConnAccessibilityService : AccessibilityService() {
      * @param persist when true (default) the result is written to SharedPreferences
      *   and pushed to the watch. Polling callers pass false so a single peek
      *   produces exactly one watch update instead of one per poll.
+     * @param publishFollowUp when true (default) the scrape publishes its own unforced watch
+     *   update and schedules a follow-up Health Connect sync, which is what the passive
+     *   event-driven path wants. A caller that publishes a forced update of its own passes
+     *   false: the scrape is still persisted, but it no longer fires a second Data Layer push
+     *   and a second full Health Connect read (with its own wake lock) for the same user action.
      */
-    fun scrapeWindowContent(persist: Boolean = true): RingConnVitals? {
+    fun scrapeWindowContent(persist: Boolean = true, publishFollowUp: Boolean = true): RingConnVitals? {
         val collectedTokens = mutableListOf<String>()
 
         try {
@@ -129,6 +134,17 @@ class RingConnAccessibilityService : AccessibilityService() {
         val currentVitals = RingConnTelemetryReader.readBestAvailableVitals(this)
         val parsedVitals = RingConnTelemetryParser.parseTokens(collectedTokens, currentVitals)
 
+        // Evidence for the one question that gates the override: which number did the scrape
+        // actually read? Logging only — parsing is untouched. Until this line shows the scraped
+        // HR is the freshest measurement rather than a resting rate or the day minimum,
+        // MeasuredVitalsPolicy.SCRAPE_OVERRIDE_ENABLED must stay false.
+        val hrEvidence = RingConnTelemetryParser.heartRateEvidence(collectedTokens, parsedVitals.lastHeartRate)
+        if (hrEvidence != null) {
+            Log.i(TAG, "Scrape HR evidence: HR=${parsedVitals.lastHeartRate} raw='${hrEvidence.token}' tokenIndex=${hrEvidence.index}/${collectedTokens.size} sampleAtSeconds=${parsedVitals.sampleAtSeconds}")
+        } else {
+            Log.i(TAG, "Scrape HR evidence: HR=${parsedVitals.lastHeartRate} raw=<no bpm token matched> sampleAtSeconds=${parsedVitals.sampleAtSeconds}")
+        }
+
         val hasMeaningfulData = parsedVitals.lastHeartRate > 0 ||
                 parsedVitals.sleepScore > 0 ||
                 (parsedVitals.sleepDeepMins + parsedVitals.sleepRemMins + parsedVitals.sleepLightMins) > 0 ||
@@ -147,12 +163,18 @@ class RingConnAccessibilityService : AccessibilityService() {
                     source = getString(R.string.source_ringconn_direct_short)
                 )
 
-                serviceScope.launch {
-                    WearDataSyncService(this@RingConnAccessibilityService).syncVitalsToWatch(parsedVitals)
+                // The follow-up push and the delayed Health Connect sync belong to the passive
+                // path, where this scrape is the whole user-visible update. A caller that
+                // publishes a forced sync itself opts out, so one action stays one push.
+                if (publishFollowUp) {
+                    serviceScope.launch {
+                        WearDataSyncService(this@RingConnAccessibilityService).syncVitalsToWatch(parsedVitals)
+                    }
+                    scheduleDelayedHealthConnectSync()
                 }
-                scheduleDelayedHealthConnectSync()
 
-                Log.i(TAG, "100% Exact RingConn telemetry scraped & synced: HR=${parsedVitals.lastHeartRate}, Sleep=${parsedVitals.sleepScore}, Act=${parsedVitals.activityScore}, Steps=${parsedVitals.liveSteps}, Bat=${parsedVitals.ringBattery}%")
+                val followUp = if (publishFollowUp) " & synced" else " & persisted only (the caller publishes)"
+                Log.i(TAG, "100% Exact RingConn telemetry scraped$followUp: HR=${parsedVitals.lastHeartRate}, Sleep=${parsedVitals.sleepScore}, Act=${parsedVitals.activityScore}, Steps=${parsedVitals.liveSteps}, Bat=${parsedVitals.ringBattery}%")
             } else {
                 Log.d(TAG, "Scraped (not persisted): HR=${parsedVitals.lastHeartRate}, Sleep=${parsedVitals.sleepScore}")
             }

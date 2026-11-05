@@ -1,5 +1,6 @@
 package io.github.hardbas.wearsync.bridge.service
 
+import io.github.hardbas.wearsync.bridge.data.RingConnVitals
 import kotlin.math.roundToInt
 
 /**
@@ -123,4 +124,92 @@ object MeasuredVitalsPolicy {
      */
     fun <T> ringSamples(records: List<T>, isRingOrigin: (T) -> Boolean): List<T> =
         records.filter(isRingOrigin)
+
+    /**
+     * When the two samples were taken, in the only form both sides can be compared in.
+     *
+     * A `null` on either side is not "zero": it means that source cannot say when the
+     * number it holds was measured, so no precedence rule may be derived from it.
+     */
+    data class ScrapeSample(val scrapedAtSeconds: Long?, val publishedAtSeconds: Long?) {
+        val isComparable: Boolean
+            get() = scrapedAtSeconds != null && publishedAtSeconds != null
+
+        companion object {
+            /** Neither side carries a comparable sample time: nothing may be overridden. */
+            fun unavailable(): ScrapeSample = ScrapeSample(scrapedAtSeconds = null, publishedAtSeconds = null)
+        }
+    }
+
+    /**
+     * Master gate for letting an accessibility scrape override a published measurement.
+     *
+     * It ships `false` and must stay `false` until the scrape-time log proves that the number
+     * the scrape reads is the freshest measurement. The 12:47:53 device run is why: with
+     * RingConn open, the scrape logged `HR=53` while the published payload carried `HR=63` in
+     * the same second, and nothing yet says whether that 53 is the latest measurement, the
+     * resting rate, or the day minimum. Turning this on before that is answered would publish
+     * a number nobody measured.
+     *
+     * With this `false`, [scrapeSampleFor] returns [ScrapeSample.unavailable] and
+     * [withMeasuredScrape] returns the published vitals untouched, byte for byte.
+     */
+    const val SCRAPE_OVERRIDE_ENABLED = false
+
+    /**
+     * The sample times the scrape override would compare, and only when it is enabled.
+     *
+     * Both sides must carry a trusted sample time for any precedence rule to exist. A null on
+     * either side means that source cannot say when its number was measured, so the published
+     * value stands. In particular the published side uses [RingConnVitals.sampleAtSeconds],
+     * never `refreshTimestamp`: that field falls back to the wall clock, which is exactly how a
+     * stale RingConn screen looks fresh.
+     */
+    fun scrapeSampleFor(published: RingConnVitals, scraped: RingConnVitals?): ScrapeSample =
+        if (!SCRAPE_OVERRIDE_ENABLED) ScrapeSample.unavailable()
+        else ScrapeSample(
+            scrapedAtSeconds = scraped?.sampleAtSeconds,
+            publishedAtSeconds = published.sampleAtSeconds
+        )
+
+    /**
+     * Overlays an accessibility scrape on the vitals that are about to be published.
+     *
+     * Two rules, and no third one:
+     *  - the scrape only contributes when its sample is strictly newer than the one already
+     *    published, and only when both sample times exist. Without a comparison there is no
+     *    reason to prefer it, so the published value stands;
+     *  - a field the scrape returned as unknown (0) is never written, because a partial
+     *    scrape that saw one card has not measured the rest. Copying its zeros would empty
+     *    the watch, and treating them as measurements would print a value nobody measured.
+     */
+    fun withMeasuredScrape(
+        published: RingConnVitals,
+        scraped: RingConnVitals?,
+        sample: ScrapeSample
+    ): RingConnVitals {
+        if (scraped == null) return published
+        val scrapedAt = sample.scrapedAtSeconds ?: return published
+        val publishedAt = sample.publishedAtSeconds ?: return published
+        if (scrapedAt <= publishedAt) return published
+
+        return published.copy(
+            lastHeartRate = measured(scraped.lastHeartRate, published.lastHeartRate),
+            lastSpo2 = measured(scraped.lastSpo2, published.lastSpo2),
+            lastHrv = measured(scraped.lastHrv, published.lastHrv),
+            sleepScore = measured(scraped.sleepScore, published.sleepScore),
+            sleepDeepMins = measured(scraped.sleepDeepMins, published.sleepDeepMins),
+            sleepRemMins = measured(scraped.sleepRemMins, published.sleepRemMins),
+            sleepLightMins = measured(scraped.sleepLightMins, published.sleepLightMins),
+            activityScore = measured(scraped.activityScore, published.activityScore),
+            liveSteps = measured(scraped.liveSteps, published.liveSteps),
+            stressScore = measured(scraped.stressScore, published.stressScore),
+            skinTempOffset = if (scraped.skinTempOffset != 0.0f) scraped.skinTempOffset else published.skinTempOffset,
+            refreshTimestamp = scrapedAt
+        )
+    }
+
+    /** The scrape's value only when it saw one; a 0 on screen means "not rendered", not "measured 0". */
+    private fun measured(scrapedValue: Int, publishedValue: Int): Int =
+        if (scrapedValue > 0) scrapedValue else publishedValue
 }
