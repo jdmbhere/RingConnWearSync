@@ -66,6 +66,22 @@ object MeasuredVitalsPolicy {
     }
 
     /**
+     * In-bed minutes, the denominator of [sleepEfficiencyPct].
+     *
+     * RingConn reports time in bed from bed time to the final awakening, so it includes the
+     * latency to fall asleep. Deriving it as asleep + awake dropped that latency and pushed
+     * efficiency above what the ring itself shows for the same night. The nocturnal span is
+     * the measured value; the stage sum is only a fallback for a span that is absent or that
+     * cannot contain the sleep it measured.
+     */
+    fun inBedMinutes(nocturnalSpanMinutes: Long, asleepMinutes: Int, awakeMinutes: Int): Int {
+        val stageSum = asleepMinutes.coerceAtLeast(0) + awakeMinutes.coerceAtLeast(0)
+        if (nocturnalSpanMinutes <= 0L) return stageSum
+        val span = nocturnalSpanMinutes.toInt()
+        return if (span >= asleepMinutes) span else stageSum
+    }
+
+    /**
      * The score of a night that has stage records, and 0 for one that has none.
      *
      * Each stage contributes in proportion to the minutes actually recorded, so an absent

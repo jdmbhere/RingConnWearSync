@@ -322,17 +322,15 @@ class RingConnVitalsMergeTest {
     }
 
     @Test
-    fun parser_parsesSleepDurationString_andPopulatesPhysiologicalStages() {
+    fun parser_doesNotFabricateSleepStagesOrScore_fromStandaloneDurationString() {
         val tokens = listOf("Sleep", "6h 10m")
         val parsed = RingConnTelemetryParser.parseTokens(tokens, RingConnVitals())
-        val totalAsleep = parsed.sleepDeepMins + parsed.sleepRemMins + parsed.sleepLightMins
-        assertEquals(370, totalAsleep)
-        assertEquals(81, parsed.sleepDeepMins)
-        assertEquals(85, parsed.sleepRemMins)
-        assertEquals(204, parsed.sleepLightMins)
-        assertTrue("Sleep score should be computed from stages", parsed.sleepScore in 45..98)
+        assertEquals(0, parsed.sleepDeepMins)
+        assertEquals(0, parsed.sleepRemMins)
+        assertEquals(0, parsed.sleepLightMins)
+        assertEquals(0, parsed.sleepAwakeMins)
+        assertEquals(0, parsed.sleepScore)
 
-        // Variations of formatting
         val variations = listOf(
             listOf("6h10m"),
             listOf("6 h 10 min"),
@@ -341,24 +339,23 @@ class RingConnVitalsMergeTest {
         )
         for (varTokens in variations) {
             val res = RingConnTelemetryParser.parseTokens(varTokens, RingConnVitals())
-            assertEquals(370, res.sleepDeepMins + res.sleepRemMins + res.sleepLightMins)
+            assertEquals(0, res.sleepDeepMins + res.sleepRemMins + res.sleepLightMins)
+            assertEquals(0, res.sleepScore)
         }
     }
 
     @Test
-    fun parser_scalesPartialStages_toFullSleepDurationFromUI() {
-        val partialVitals = RingConnVitals(
+    fun parser_doesNotScaleExistingSleepStages_whenLargerTotalDurationAppears() {
+        val measuredVitals = RingConnVitals(
             sleepDeepMins = 40,
             sleepRemMins = 50,
-            sleepLightMins = 150 // total 240 mins (4h)
+            sleepLightMins = 150
         )
         val tokens = listOf("Sleep", "6h 10m")
-        val parsed = RingConnTelemetryParser.parseTokens(tokens, partialVitals)
-        val totalAsleep = parsed.sleepDeepMins + parsed.sleepRemMins + parsed.sleepLightMins
-        assertEquals(370, totalAsleep)
-        assertEquals(62, parsed.sleepDeepMins)
-        assertEquals(77, parsed.sleepRemMins)
-        assertEquals(231, parsed.sleepLightMins)
+        val parsed = RingConnTelemetryParser.parseTokens(tokens, measuredVitals)
+        assertEquals(40, parsed.sleepDeepMins)
+        assertEquals(50, parsed.sleepRemMins)
+        assertEquals(150, parsed.sleepLightMins)
     }
 
     @Test
@@ -375,6 +372,45 @@ class RingConnVitalsMergeTest {
         assertEquals(205, parsed.sleepLightMins)
         assertEquals(15, parsed.sleepAwakeMins)
         assertEquals(370, parsed.sleepDeepMins + parsed.sleepRemMins + parsed.sleepLightMins)
+    }
+
+    @Test
+    fun parser_parsesRingConnSleepStageRows_withPercentagesAndLocalizedLabels() {
+        val englishWithPct = listOf(
+            "Deep Sleep", "21%", "1h 47m",
+            "REM Sleep", "15%", "1h 00m",
+            "Light Sleep", "59%", "4h 05m",
+            "Awake Time", "5%", "35m"
+        )
+        val parsedEn = RingConnTelemetryParser.parseTokens(englishWithPct, RingConnVitals())
+        assertEquals(107, parsedEn.sleepDeepMins)
+        assertEquals(60, parsedEn.sleepRemMins)
+        assertEquals(245, parsedEn.sleepLightMins)
+        assertEquals(35, parsedEn.sleepAwakeMins)
+
+        val spanishWithPct = listOf(
+            "Sueño profundo", "21 %", "1 h 47 min",
+            "Sueño REM", "15 %", "1 h 00 min",
+            "Sueño ligero", "59 %", "4 h 05 min",
+            "Tiempo despierto", "5 %", "35 min"
+        )
+        val parsedEs = RingConnTelemetryParser.parseTokens(spanishWithPct, RingConnVitals())
+        assertEquals(107, parsedEs.sleepDeepMins)
+        assertEquals(60, parsedEs.sleepRemMins)
+        assertEquals(245, parsedEs.sleepLightMins)
+        assertEquals(35, parsedEs.sleepAwakeMins)
+
+        val compositeSingleLine = listOf(
+            "Deep Sleep 21% 1h 47m",
+            "REM Sleep 15% 1h 00m",
+            "Light Sleep 59% 4h 05m",
+            "Awake 5% 35m"
+        )
+        val parsedComposite = RingConnTelemetryParser.parseTokens(compositeSingleLine, RingConnVitals())
+        assertEquals(107, parsedComposite.sleepDeepMins)
+        assertEquals(60, parsedComposite.sleepRemMins)
+        assertEquals(245, parsedComposite.sleepLightMins)
+        assertEquals(35, parsedComposite.sleepAwakeMins)
     }
 
     @Test
