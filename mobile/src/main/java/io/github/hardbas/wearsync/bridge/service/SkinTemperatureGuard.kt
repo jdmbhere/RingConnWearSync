@@ -23,9 +23,18 @@ object SkinTemperatureGuard {
      */
     const val MAX_ABS_OFFSET_C = 1.5f
 
-    /** Plausible range for a skin-temperature baseline, in Celsius. */
+    /**
+     * Plausible range for a skin-temperature baseline, in Celsius.
+     *
+     * The ceiling is 38.0, not 40.0: a nocturnal skin-temperature *baseline* of 40 °C is a
+     * fever the sensor cannot measure and the app must never present. Measured phone evidence
+     * showed no legitimate value above 38.0 — the only 40.0 the app ever held came from a stale
+     * cache, and neither `SkinTemperatureRecord` nor `BodyTemperatureRecord` was readable from
+     * Health Connect — so the upper bound is set at 38.0 °C, the practical limit of a
+     * wearable skin probe, and anything above it is treated as unknown instead of admitted.
+     */
     const val MIN_BASELINE_C = 30.0f
-    const val MAX_BASELINE_C = 40.0f
+    const val MAX_BASELINE_C = 38.0f
 
     /** Sign, integer part, optional decimal part, optional degree marker, optional unit. */
     private val OFFSET_TOKEN =

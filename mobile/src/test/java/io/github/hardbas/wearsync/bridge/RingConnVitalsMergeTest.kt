@@ -77,6 +77,34 @@ class RingConnVitalsMergeTest {
     }
 
     @Test
+    fun `parser_discardsAStoredFortyDegreeBaseline`() {
+        // Device evidence: HomeWidgetPreferences held keySkinTempBaseline=40.0 and the
+        // parser handed it back unchanged. A value the guard now rejects must become
+        // unknown, not a resurrected baseline.
+        val cached = RingConnVitals(skinTempBaseline = 40.0f)
+        val parsed = RingConnTelemetryParser.parseTokens(listOf("Sleep", "68"), cached)
+        assertEquals(0.0f, parsed.skinTempBaseline, 0.01f)
+    }
+
+    @Test
+    fun `parser_discardsAScrapedFortyDegreeBaseline`() {
+        val parsed = RingConnTelemetryParser.parseTokens(
+            listOf("Skin Temperature", "Baseline", "40.0°C"),
+            RingConnVitals()
+        )
+        assertEquals(0.0f, parsed.skinTempBaseline, 0.01f)
+    }
+
+    @Test
+    fun `parser_keepsAPhysiologicalBaseline`() {
+        val parsed = RingConnTelemetryParser.parseTokens(
+            listOf("Skin Temperature", "Baseline", "36.2°C"),
+            RingConnVitals()
+        )
+        assertEquals(36.2f, parsed.skinTempBaseline, 0.01f)
+    }
+
+    @Test
     fun parser_preservesExplicitBaselineWhenPresent() {
         val tokens = listOf("Skin Temperature", "-0.2°C", "Baseline", "36.2°C")
         val parsed = RingConnTelemetryParser.parseTokens(tokens, RingConnVitals())
