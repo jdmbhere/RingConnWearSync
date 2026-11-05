@@ -44,13 +44,32 @@ class PhoneMessageReceiverService : WearableListenerService() {
             try {
                 // Passively scrape if the user already has RingConn open in the foreground,
                 // never launching RingConn's Activity on screen automatically.
-                if (RingConnAccessibilityService.isRunning()) {
-                    RingConnAccessibilityService.instance?.scrapeWindowContent(persist = true)
+                //
+                // publishFollowUp = false: this caller publishes one forced update below, so the
+                // scrape must not fire an unforced push of its own nor schedule the follow-up
+                // Health Connect sync (another full read and a 15s wake lock) for the same tap.
+                val scraped = if (RingConnAccessibilityService.isRunning()) {
+                    RingConnAccessibilityService.instance
+                        ?.scrapeWindowContent(persist = true, publishFollowUp = false)
+                } else {
+                    null
                 }
 
                 // Read best available vitals silently (pokes RingConn's background widget worker
                 // via system_server onUpdate() and merges Health Connect + WidgetHost + cache).
-                val vitals = RingConnTelemetryReader.readBestAvailableVitalsSuspend(this@PhoneMessageReceiverService)
+                val published = RingConnTelemetryReader.readBestAvailableVitalsSuspend(this@PhoneMessageReceiverService)
+
+                // The scrape is persisted above, but it may only override what the merge produced
+                // while MeasuredVitalsPolicy.SCRAPE_OVERRIDE_ENABLED is on. That gate ships off:
+                // both sides need a trusted sample time (RingConnVitals.sampleAtSeconds, never the
+                // wall-clock refreshTimestamp) before any precedence rule can exist, and the
+                // scrape-time log has not yet shown the scraped number is the freshest measurement.
+                val vitals = MeasuredVitalsPolicy.withMeasuredScrape(
+                    published = published,
+                    scraped = scraped,
+                    sample = MeasuredVitalsPolicy.scrapeSampleFor(published = published, scraped = scraped)
+                )
+
                 val success = WearDataSyncService(this@PhoneMessageReceiverService).syncVitalsToWatch(vitals, force = true)
                 Log.i(TAG, "Silent RingConn vitals sync to Watch: HR=${vitals.lastHeartRate}, SpO2=${vitals.lastSpo2}, success=$success")
                 sendSyncStatusToWatch(if (success) "SUCCESS" else "ERROR")

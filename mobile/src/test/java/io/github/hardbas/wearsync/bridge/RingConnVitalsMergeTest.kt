@@ -5,9 +5,13 @@ import io.github.hardbas.wearsync.bridge.service.RingConnTelemetryParser
 import io.github.hardbas.wearsync.bridge.service.RingConnTelemetryReader
 import io.github.hardbas.wearsync.bridge.service.RingConnWidgetHostReader
 import io.github.hardbas.wearsync.bridge.service.WearDataSyncService
+import java.io.File
+import java.time.ZonedDateTime
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -575,6 +579,116 @@ class RingConnVitalsMergeTest {
 
         val hcWithFresherRingConnSample = RingConnVitals(lastHeartRate = 74, refreshTimestamp = 1793677600L)
         assertTrue(RingConnTelemetryReader.shouldPrioritizeHealthConnectHr(hcWithFresherRingConnSample, widgetVitals))
+    }
+
+    // --- Source audit: one watch action, one published update -----------------------------
+
+    @Test
+    fun `the scrape keeps its follow-up push by default`() {
+        // S3: the passive event-driven path calls scrapeWindowContent() with no arguments and
+        // must keep persisting, pushing and scheduling the Health Connect sync exactly as before.
+        val service = File(SERVICE_DIR, "RingConnAccessibilityService.kt")
+        assertTrue("${service.absolutePath} is missing, so this audit would pass for free", service.isFile)
+        val source = service.readText()
+
+        assertTrue(
+            "scrapeWindowContent must keep publishFollowUp defaulting to true for its existing callers",
+            source.contains("fun scrapeWindowContent(persist: Boolean = true, publishFollowUp: Boolean = true)")
+        )
+    }
+
+    @Test
+    fun `only the watch-triggered path opts out of the scrape follow-up`() {
+        // S1: the watch-triggered call already publishes a forced update, so it opts out. Any
+        // other call site opting out would silently remove the passive path's push.
+        val sources = File(SERVICE_DIR).listFiles { f -> f.isFile && f.name.endsWith(".kt") }?.toList().orEmpty()
+        assertTrue("no Kotlin sources under ${File(SERVICE_DIR).absolutePath}", sources.isNotEmpty())
+
+        val optingOut = sources.filter { it.readText().contains("publishFollowUp = false") }
+
+        assertEquals(
+            "exactly one call site may opt out of the scrape follow-up: ${optingOut.map { it.name }}",
+            listOf("PhoneMessageReceiverService.kt"),
+            optingOut.map { it.name }
+        )
+    }
+
+    // --- S1: a trusted sample time, or none at all ----------------------------------------
+
+    @Test
+    fun `a clock time printed minutes ago becomes a trusted sample time`() {
+        val now = ZonedDateTime.now()
+        val shown = now.minusMinutes(30)
+
+        val parsed = RingConnTelemetryParser.parseTokens(
+            listOf("Heart rate", "63 bpm", clockToken(shown)),
+            RingConnVitals()
+        )
+
+        assertEquals(
+            "a time printed half an hour ago resolves to that instant without guessing a date",
+            shown.withSecond(0).withNano(0).toEpochSecond(),
+            parsed.sampleAtSeconds
+        )
+    }
+
+    @Test
+    fun `no clock time on screen leaves the sample time unknown`() {
+        val parsed = RingConnTelemetryParser.parseTokens(
+            listOf("Heart rate", "63 bpm", "SpO2", "96 %", "Steps", "4210"),
+            RingConnVitals()
+        )
+
+        assertNull("no time token means no sample time, never the clock", parsed.sampleAtSeconds)
+    }
+
+    @Test
+    fun `a clock time that could be a day off leaves the sample time unknown`() {
+        // A bare clock time carries no date. Ten hours of wall-clock distance from now puts
+        // the printed time fourteen hours away once the parser rolls it to the nearest day,
+        // which is far more than a measurement time can explain: the guess would be a day
+        // off with nothing on screen to say which day.
+        val now = ZonedDateTime.now()
+        val shown = now.plusHours(10)
+
+        val parsed = RingConnTelemetryParser.parseTokens(
+            listOf("Heart rate", "63 bpm", clockToken(shown)),
+            RingConnVitals()
+        )
+
+        assertNull("an ambiguous date must stay unknown instead of being guessed", parsed.sampleAtSeconds)
+        assertNotNull("refreshTimestamp keeps its old meaning and is unaffected", parsed.refreshTimestamp)
+    }
+
+    @Test
+    fun `a parsed time token still drives refreshTimestamp exactly as before`() {
+        // S5: sampleAtSeconds is an addition, not a change of refreshTimestamp.
+        val now = ZonedDateTime.now()
+        val shown = now.plusHours(10)
+
+        val parsed = RingConnTelemetryParser.parseTokens(
+            listOf("Heart rate", "63 bpm", clockToken(shown)),
+            RingConnVitals()
+        )
+
+        assertEquals(
+            "refreshTimestamp must keep falling back to the inferred instant",
+            now.withHour(shown.hour).withMinute(shown.minute).withSecond(0).withNano(0)
+                .let { if (it.isAfter(now.plusMinutes(2))) it.minusDays(1) else it }
+                .toEpochSecond(),
+            parsed.refreshTimestamp
+        )
+    }
+
+    /** `9:47 AM` in the 12-hour shape RingConn prints, with no date attached. */
+    private fun clockToken(at: ZonedDateTime): String {
+        val hour12 = ((at.hour + 11) % 12) + 1
+        val ampm = if (at.hour < 12) "AM" else "PM"
+        return String.format("%d:%02d %s", hour12, at.minute, ampm)
+    }
+
+    private companion object {
+        const val SERVICE_DIR = "src/main/java/io/github/hardbas/wearsync/bridge/service"
     }
 }
 
