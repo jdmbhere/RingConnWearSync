@@ -81,6 +81,22 @@ class SkinTemperatureGuardTest {
     }
 
     @Test
+    fun `a baseline plausibility ceiling rejects a forty degree reading`() {
+        // A skin-temperature baseline of 40.0 °C is physiologically absurd and is
+        // exactly what a stale cache kept resurrecting. Real nocturnal baselines sit
+        // around 33-36 °C.
+        assertFalse(SkinTemperatureGuard.isPlausibleBaseline(40.0f))
+        assertFalse(SkinTemperatureGuard.isPlausibleBaseline(38.1f))
+        assertTrue(SkinTemperatureGuard.isPlausibleBaseline(36.2f))
+    }
+
+    @Test
+    fun `a stored forty degree baseline is forgotten`() {
+        assertEquals(0.0f, SkinTemperatureGuard.sanitizeBaseline(40.0f), 0.001f)
+        assertEquals(36.2f, SkinTemperatureGuard.sanitizeBaseline(36.2f), 0.001f)
+    }
+
+    @Test
     fun `a stored implausible offset is forgotten`() {
         assertEquals(0.0f, SkinTemperatureGuard.sanitizeOffset(4.0f), 0.001f)
         assertEquals(-0.4f, SkinTemperatureGuard.sanitizeOffset(-0.4f), 0.001f)
@@ -92,5 +108,15 @@ class SkinTemperatureGuardTest {
         assertEquals(35.94f, SkinTemperatureGuard.sanitizeBaseline(35.94f), 0.001f)
         assertEquals(0.0f, SkinTemperatureGuard.sanitizeBaseline(41.0f), 0.001f)
         assertEquals(0.0f, SkinTemperatureGuard.sanitizeBaseline(0.0f), 0.001f)
+    }
+
+    @Test
+    fun `a measured baseline above the sensor range is rejected and a real one is accepted`() {
+        // The guard also stands between a Health Connect record and the watch: a provider that
+        // writes 40.0 °C must not reach the tile, while the measured 35.91 °C baseline must.
+        assertFalse(SkinTemperatureGuard.isPlausibleBaseline(40.0f))
+        assertEquals(0.0f, SkinTemperatureGuard.sanitizeBaseline(40.0f), 0.001f)
+        assertTrue(SkinTemperatureGuard.isPlausibleBaseline(35.91f))
+        assertEquals(35.91f, SkinTemperatureGuard.sanitizeBaseline(35.91f), 0.001f)
     }
 }

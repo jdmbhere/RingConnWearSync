@@ -12,6 +12,7 @@ import androidx.health.connect.client.records.OxygenSaturationRecord
 import androidx.health.connect.client.records.RespiratoryRateRecord
 import androidx.health.connect.client.records.Record
 import androidx.health.connect.client.records.RestingHeartRateRecord
+import androidx.health.connect.client.records.SkinTemperatureRecord
 import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.records.TotalCaloriesBurnedRecord
@@ -23,6 +24,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 import kotlin.math.roundToInt
 import kotlin.reflect.KClass
 import kotlinx.coroutines.async
@@ -125,7 +127,23 @@ object RingConnTelemetryReader {
         HealthPermission.getReadPermission(RespiratoryRateRecord::class)
     )
 
-    val REQUESTED_HEALTH_PERMISSIONS: Set<String> = CORE_HEALTH_PERMISSIONS + PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND
+    /**
+     * The skin-temperature grant, kept out of [CORE_HEALTH_PERMISSIONS] on purpose.
+     *
+     * It is a real consumer now: [readSkinTemperature] feeds `skinTempBaseline` and
+     * `skinTempOffset`. It still must not mark the app as unconfigured, because a night without
+     * this grant is served by the widget scrape fallback instead of by nothing at all.
+     *
+     * Body temperature is deliberately absent: nothing in either module reads
+     * `BodyTemperatureRecord` (the ring publishes zero rows there), so asking for it only put an
+     * unused permission on the consent screen.
+     */
+    val SKIN_TEMPERATURE_PERMISSIONS = setOf(
+        HealthPermission.getReadPermission(SkinTemperatureRecord::class)
+    )
+
+    val REQUESTED_HEALTH_PERMISSIONS: Set<String> =
+        CORE_HEALTH_PERMISSIONS + SKIN_TEMPERATURE_PERMISSIONS + PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND
 
     fun isHealthConnectAvailable(context: Context): Boolean {
         return try {
@@ -158,6 +176,107 @@ object RingConnTelemetryReader {
             false
         }
     }
+
+    /** How far back the nightly skin-temperature read looks. */
+    private const val SKIN_TEMPERATURE_LOOKBACK_DAYS = 14L
+
+    /**
+     * The published nightly skin temperature, read from Health Connect.
+     *
+     * The ring writes two or three `SkinTemperatureRecord` rows per night, each with its own
+     * baseline and a single delta, so this function does not pick a row itself: it maps the
+     * records into [SkinTemperatureSample] and lets [SkinTemperatureRecords] decide. That policy
+     * is pinned by unit tests instead of by one phone observed once.
+     *
+     * Everything is read-only and defensive. A missing grant, an unsupported record type or a
+     * provider error is logged and answered with null, so the caller falls back to the widget
+     * scrape and the sync path never sees an exception.
+     *
+     * Exactly one line is logged per call: the chosen night with its baseline and delta, or the
+     * reason no pair was published. There is no per-record dump — six rows and twenty deltas per
+     * sync told nobody anything the chosen night does not.
+     *
+     * @return the sanitised pair, or null when no night has a plausible published baseline.
+     */
+    suspend fun readSkinTemperature(context: Context): NightlySkinTemperature? {
+        return try {
+            if (!isHealthConnectAvailable(context)) {
+                Log.i(TAG, "Skin temperature: Health Connect unavailable, keeping the widget fallback")
+                return null
+            }
+            val client = HealthConnectClient.getOrCreate(context)
+            val granted = client.permissionController.getGrantedPermissions()
+            if (!granted.contains(HealthPermission.getReadPermission(SkinTemperatureRecord::class))) {
+                Log.i(TAG, "Skin temperature: READ_SKIN_TEMPERATURE not granted, keeping the widget fallback")
+                return null
+            }
+
+            val end = Instant.now()
+            val start = end.minus(Duration.ofDays(SKIN_TEMPERATURE_LOOKBACK_DAYS))
+            val records = client.readAllPages(
+                recordType = SkinTemperatureRecord::class,
+                timeRange = TimeRangeFilter.between(start, end)
+            )
+            val samples = records.mapNotNull { record ->
+                // One unreadable record must not hide the others.
+                try {
+                    toSkinTemperatureSample(record)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Skin temperature: record unreadable (${e.javaClass.simpleName}: ${e.message})")
+                    null
+                }
+            }
+            val nightly = SkinTemperatureRecords.latestNightly(samples, ZoneId.systemDefault())
+            if (nightly == null) {
+                Log.i(TAG, "Skin temperature: no published pair in ${SKIN_TEMPERATURE_LOOKBACK_DAYS}d (records=${records.size}), keeping the widget fallback")
+                return null
+            }
+
+            val baseline = SkinTemperatureGuard.sanitizeBaseline(nightly.baselineCelsius)
+            val deltaText = when {
+                !nightly.deltaPresent -> "absent"
+                !SkinTemperatureGuard.isPlausibleOffset(nightly.offsetCelsius) ->
+                    "rejected(${celsiusText(nightly.offsetCelsius)})"
+                else -> celsiusText(nightly.offsetCelsius)
+            }
+            if (baseline <= 0f) {
+                Log.i(TAG, "Skin temperature: night=${nightly.nightEndingOn} baseline rejected(${celsiusText(nightly.baselineCelsius)}), keeping the widget fallback")
+                return null
+            }
+            Log.i(
+                TAG,
+                "Skin temperature: night=${nightly.nightEndingOn} baseline=${celsiusText(baseline)} delta=$deltaText"
+            )
+            return nightly.copy(
+                baselineCelsius = baseline,
+                offsetCelsius = SkinTemperatureGuard.sanitizeOffset(nightly.offsetCelsius)
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "Skin temperature: read failed (${e.javaClass.simpleName}: ${e.message}), keeping the widget fallback")
+            null
+        }
+    }
+
+    /**
+     * Maps one Health Connect record into the plain value the selection policy works on.
+     *
+     * Field names follow `androidx.health.connect:connect-client:1.1.0-alpha11`: the record holds
+     * `baseline: Temperature?` (read via `inCelsius`, there is no `baseline.temperature`) and
+     * `deltas: List<Delta>` with `Delta.time: Instant` and `Delta.delta.inCelsius`.
+     */
+    private fun toSkinTemperatureSample(record: SkinTemperatureRecord): SkinTemperatureSample =
+        SkinTemperatureSample(
+            start = record.startTime,
+            end = record.endTime,
+            lastModified = record.metadata.lastModifiedTime,
+            baselineCelsius = record.baseline?.inCelsius?.toFloat(),
+            deltas = record.deltas.map { delta ->
+                SkinTemperatureDelta(time = delta.time, deltaCelsius = delta.delta.inCelsius.toFloat())
+            }
+        )
+
+    /** Locale-pinned so a logcat line never carries a comma decimal separator. */
+    private fun celsiusText(value: Float): String = String.format(Locale.US, "%.3f", value)
 
     suspend fun readFromHealthConnect(context: Context): RingConnVitals? = coroutineScope {
         if (!isHealthConnectAvailable(context)) {
@@ -1144,9 +1263,18 @@ object RingConnTelemetryReader {
                 null
             }
         }
+        val skinTemperatureDeferred = async {
+            try {
+                readSkinTemperature(context)
+            } catch (e: Exception) {
+                Log.w(TAG, "Skin temperature read exception: ${e.message}")
+                null
+            }
+        }
 
         val widgetVitals = widgetDeferred.await()
         val hcVitals = hcDeferred.await()
+        val hcSkinTemperature = skinTemperatureDeferred.await()
 
         if (widgetVitals != null && (
                 widgetVitals.lastHeartRate > 0 ||
@@ -1279,14 +1407,27 @@ object RingConnTelemetryReader {
             }
             val finalStressScore = if (widgetVitals.stressScore > 0) widgetVitals.stressScore else (hcVitals?.stressScore?.takeIf { it > 0 } ?: cached.stressScore)
 
-            // A stale or misparsed reading must not outlive the guard, and the
-            // baseline is never invented: unknown stays unknown.
-            val mergedTempOffset = SkinTemperatureGuard.sanitizeOffset(
-                if (widgetVitals.skinTempOffset != 0.0f) widgetVitals.skinTempOffset else cached.skinTempOffset
-            )
-            val mergedTempBaseline = SkinTemperatureGuard.sanitizeBaseline(
-                if (widgetVitals.skinTempBaseline > 0f) widgetVitals.skinTempBaseline else cached.skinTempBaseline
-            )
+            // Health Connect owns the night it has a record for; the widget scrape stays as the
+            // fallback for a night it does not. A stale or misparsed reading must not outlive the
+            // guard, and the baseline is never invented: unknown stays unknown. When Health
+            // Connect wins with a record that carries no delta, the offset is 0.0 because the
+            // deviation is unknown, not because a measured zero was read.
+            val hcTempBaseline = hcSkinTemperature?.baselineCelsius
+                ?.takeIf { SkinTemperatureGuard.isPlausibleBaseline(it) }
+            val mergedTempBaseline = if (hcTempBaseline != null) {
+                hcTempBaseline
+            } else {
+                SkinTemperatureGuard.sanitizeBaseline(
+                    if (widgetVitals.skinTempBaseline > 0f) widgetVitals.skinTempBaseline else cached.skinTempBaseline
+                )
+            }
+            val mergedTempOffset = if (hcSkinTemperature != null) {
+                SkinTemperatureGuard.sanitizeOffset(hcSkinTemperature.offsetCelsius)
+            } else {
+                SkinTemperatureGuard.sanitizeOffset(
+                    if (widgetVitals.skinTempOffset != 0.0f) widgetVitals.skinTempOffset else cached.skinTempOffset
+                )
+            }
 
             val mergedSleepInsight = if (isWidgetSleepStaleFromYesterday) cached.sleepInsight else widgetVitals.sleepInsight.ifBlank { cached.sleepInsight }
             val mergedStressInsight = widgetVitals.stressInsight.ifBlank { cached.stressInsight }
@@ -1447,6 +1588,16 @@ object RingConnTelemetryReader {
                 napMinutes = if (hcVitals.napMinutes > 0) hcVitals.napMinutes else cached.napMinutes,
                 bedtimeWindow = hcVitals.bedtimeWindow.ifBlank { cached.bedtimeWindow },
                 standHours = if (hcVitals.standHours > 0) hcVitals.standHours else cached.standHours,
+                // The Health Connect skin-temperature read feeds this path too, or a sync without
+                // widget data would fall back to a baseline that predates the record.
+                skinTempBaseline = hcSkinTemperature?.baselineCelsius
+                    ?.takeIf { SkinTemperatureGuard.isPlausibleBaseline(it) }
+                    ?: SkinTemperatureGuard.sanitizeBaseline(hcVitals.skinTempBaseline),
+                skinTempOffset = if (hcSkinTemperature != null) {
+                    SkinTemperatureGuard.sanitizeOffset(hcSkinTemperature.offsetCelsius)
+                } else {
+                    SkinTemperatureGuard.sanitizeOffset(hcVitals.skinTempOffset)
+                },
                 hrPhaseDeep = if (hcVitals.hrPhaseDeep > 0) hcVitals.hrPhaseDeep else cached.hrPhaseDeep,
                 hrPhaseRem = if (hcVitals.hrPhaseRem > 0) hcVitals.hrPhaseRem else cached.hrPhaseRem,
                 hrPhaseLight = if (hcVitals.hrPhaseLight > 0) hcVitals.hrPhaseLight else cached.hrPhaseLight,

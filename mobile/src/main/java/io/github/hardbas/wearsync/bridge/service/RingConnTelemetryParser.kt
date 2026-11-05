@@ -26,7 +26,9 @@ object RingConnTelemetryParser {
     private val COMPOSITE_ACT_REGEX = Regex("""(?i)^(?:activity|actividad)\s+(\d{1,3})$""")
     private val COMPOSITE_STRESS_REGEX = Regex("""(?i)^(?:stress|estrés|estres)\s+(\d{1,3})$""")
     private val COMPOSITE_BAT_REGEX = Regex("""(?i)^(?:battery|batería|bateria)\s+(?:%)?(\d{1,3})(?:%)?$""")
-    private val BASELINE_TEMP_REGEX = Regex("""(?i)\b(3[4-9](?:[.,]\d{1,2})?|40(?:[.,]0)?)\s*°?\s*C?\b""")
+    private val BASELINE_TEMP_REGEX = Regex("""(?i)\b(3[4-9](?:[.,]\d{1,2})?)\s*°?\s*C?\b""")
+    private val FULL_TEXT_BASELINE_TEMP_REGEX =
+        Regex("""(?i)\b(?:baseline|línea\s*base|linea\s*base)\s*:?\s*(3[4-9]\.\d{1,2})\s*°?C?\b""")
     private val REM_REGEX = Regex("""(?i)\brem\b""")
     private val SLEEP_DURATION_REGEX = Regex("""(?i)\b(\d{1,2})\s*h(?:rs?|oras?)?\s*(\d{1,2})\s*m(?:in(?:s|utos)?)?\b""")
 
@@ -591,6 +593,11 @@ object RingConnTelemetryParser {
                 for (cand in candidates) {
                     BASELINE_TEMP_REGEX.find(cand)?.let {
                         it.groupValues[1].replace(',', '.').toFloatOrNull()?.let { baseVal ->
+                            Log.i(
+                                TAG,
+                                "Skin temp baseline: header token='$token' candidate token='$cand' " +
+                                    "matched='${it.value}' parsed=$baseVal plausible=${SkinTemperatureGuard.isPlausibleBaseline(baseVal)}"
+                            )
                             if (SkinTemperatureGuard.isPlausibleBaseline(baseVal)) skinTempBaseline = baseVal
                         }
                     }
@@ -613,8 +620,13 @@ object RingConnTelemetryParser {
         }
 
         // Full text match for Baseline
-        Regex("""(?i)\b(?:baseline|línea\s*base|linea\s*base)\s*:?\s*(3[4-9]\.\d{1,2}|40\.0)\s*°?C?\b""").find(fullText)?.let {
+        FULL_TEXT_BASELINE_TEMP_REGEX.find(fullText)?.let {
             it.groupValues[1].toFloatOrNull()?.let { baseVal ->
+                Log.i(
+                    TAG,
+                    "Skin temp baseline (full text fallback): matched='${it.value}' parsed=$baseVal " +
+                        "plausible=${SkinTemperatureGuard.isPlausibleBaseline(baseVal)}"
+                )
                 if (SkinTemperatureGuard.isPlausibleBaseline(baseVal)) skinTempBaseline = baseVal
             }
         }
