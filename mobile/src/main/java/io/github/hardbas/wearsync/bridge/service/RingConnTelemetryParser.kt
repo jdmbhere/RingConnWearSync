@@ -32,17 +32,6 @@ object RingConnTelemetryParser {
     private val REM_REGEX = Regex("""(?i)\brem\b""")
     private val SLEEP_DURATION_REGEX = Regex("""(?i)\b(\d{1,2})\s*h(?:rs?|oras?)?\s*(\d{1,2})\s*m(?:in(?:s|utos)?)?\b""")
 
-    /**
-     * How far a printed clock time may sit from now before its date stops being inferable.
-     *
-     * RingConn prints `8:30 AM` with no date. The parser can only place it on today or on the
-     * day before (the same rule the existing timestamp inference applies), so the two readings
-     * are a day apart. Past a few hours, nothing on screen says which of them is the measurement
-     * and which is a widget that has not refreshed, so [RingConnVitals.sampleAtSeconds] stays
-     * `null` instead of claiming a confident but possibly day-off instant.
-     */
-    private const val SAMPLE_TIME_MAX_AMBIGUITY_SECONDS = 4L * 60L * 60L
-
     fun parseDurationMinutes(text: String?): Int? {
         if (text.isNullOrBlank()) return null
         val hm = SLEEP_DURATION_REGEX.find(text)
@@ -60,59 +49,6 @@ object RingConnTelemetryParser {
         if (mOnly != null && !text.contains("bpm", ignoreCase = true) && !text.contains("ms", ignoreCase = true) && !text.contains("km", ignoreCase = true)) {
             val m = mOnly.groupValues[1].toIntOrNull()
             if (m != null && m in 1..840) return m
-        }
-        return null
-    }
-
-    /**
-     * Whether a printed clock time can be placed in time without guessing its date.
-     *
-     * [candidate] is the instant the parser would infer for that bare clock time (today, or the
-     * day before when that would be in the near future). If it sits further than
-     * [SAMPLE_TIME_MAX_AMBIGUITY_SECONDS] from [now], the same clock time would read the same on
-     * another day, so the date is not inferable and the answer is `null` — never a guess.
-     */
-    fun resolveSampleAtSeconds(candidate: ZonedDateTime, now: ZonedDateTime): Long? {
-        val deltaSeconds = kotlin.math.abs(candidate.toEpochSecond() - now.toEpochSecond())
-        return if (deltaSeconds <= SAMPLE_TIME_MAX_AMBIGUITY_SECONDS) candidate.toEpochSecond() else null
-    }
-
-    /** The raw token a heart-rate value came from, and where it sat in the token list. */
-    data class HeartRateEvidence(val index: Int, val token: String)
-
-    /**
-     * Locates the token that produced [heartRate], for logging only.
-     *
-     * It re-reads the same shapes the parser accepts (a `bpm`/`lpm` token, the vital-signs triple,
-     * or a bare number an `HR`/`FC` header points at) but it never feeds back into parsing: the
-     * scrape needs to say which number on screen it read before anyone may trust it over the
-     * published measurement.
-     */
-    fun heartRateEvidence(tokens: List<String>, heartRate: Int): HeartRateEvidence? {
-        if (heartRate <= 0) return null
-        val clean = tokens.flatMap { it.split("\n", "\r") }.map { it.trim() }.filter { it.isNotEmpty() }
-
-        clean.forEachIndexed { idx, token ->
-            val m = HR_BPM_REGEX.find(token)
-            if (m != null && m.groupValues[1].toIntOrNull() == heartRate) {
-                return HeartRateEvidence(idx, token)
-            }
-        }
-        clean.forEachIndexed { idx, token ->
-            val m = VITAL_SIGNS_REGEX.find(token)
-            if (m != null && m.groupValues[1].toIntOrNull() == heartRate) {
-                return HeartRateEvidence(idx, token)
-            }
-        }
-        clean.forEachIndexed { idx, token ->
-            val prev = clean.getOrNull(idx - 1)?.lowercase()
-            val next = clean.getOrNull(idx + 1)?.lowercase()
-            val isHrHeader = prev == "hr" || prev == "fc" || prev == "heart rate" ||
-                prev == "frecuencia cardíaca" || prev == "frecuencia cardiaca"
-            val pointsAtIt = next == "bpm" || next == "lpm"
-            if ((isHrHeader || pointsAtIt) && token.replace("bpm", "").replace("lpm", "").trim().toIntOrNull() == heartRate) {
-                return HeartRateEvidence(idx, token)
-            }
         }
         return null
     }
@@ -186,9 +122,6 @@ object RingConnTelemetryParser {
         }
 
         var parsedWidgetTimestamp: Long? = null
-        // Filled only from a genuinely printed time token, and only when its date is inferable.
-        // It has no "now" fallback: the whole point is that a clock reading is not a measurement.
-        var parsedSampleAtSeconds: Long? = null
         var hasExplicitLatestHr = false
         var hasExplicitLatestSpo2 = false
         var hasExplicitLatestHrv = false
@@ -263,11 +196,7 @@ object RingConnTelemetryParser {
                             candidateTime = candidateTime.minusDays(1)
                         }
                         parsedWidgetTimestamp = candidateTime.toEpochSecond()
-                        // refreshTimestamp keeps its old semantics (inferred instant, or now),
-                        // while the trusted sample time is only accepted when "today" is the
-                        // only plausible day for that bare clock time.
-                        parsedSampleAtSeconds = resolveSampleAtSeconds(candidateTime, now)
-                        Log.i(TAG, "Parsed widget sample time from token '$token' (ampm='$ampm'): $parsedWidgetTimestamp ($candidateTime), trustedSampleAt=$parsedSampleAtSeconds")
+                        Log.i(TAG, "Parsed widget sample time from token '$token' (ampm='$ampm'): $parsedWidgetTimestamp ($candidateTime)")
                     } catch (e: Exception) {
                         Log.w(TAG, "Failed parsing widget time '$token': ${e.message}")
                     }
@@ -766,8 +695,6 @@ object RingConnTelemetryParser {
             isConnected = true,
             // Unchanged: an inferred printed time, or the wall clock when nothing parsed.
             refreshTimestamp = parsedWidgetTimestamp ?: (System.currentTimeMillis() / 1000L),
-            // Never inherited from baseVitals and never defaulted to now.
-            sampleAtSeconds = parsedSampleAtSeconds,
             sleepDeepMins = sleepDeepMins,
             sleepRemMins = sleepRemMins,
             sleepLightMins = sleepLightMins,
@@ -780,7 +707,7 @@ object RingConnTelemetryParser {
             vitalsInsight = vitalsInsight
         )
 
-        Log.d(TAG, "Parsed telemetry (sampleAtSeconds=$parsedSampleAtSeconds) from ${cleanTokens.size} tokens: HR=$lastHr, SpO2=$lastSpo2, HRV=$lastHrv, Sleep=$sleepScore, Act=$activityScore, Stress=$stressScore, Steps=$liveSteps, Cal=$liveCalorie, Bat=$ringBattery, TempOffset=$skinTempOffset, TempBase=$skinTempBaseline, Insights=[Sleep=${sleepInsight.isNotBlank()}, Stress=${stressInsight.isNotBlank()}, Act=${activityInsight.isNotBlank()}, Vit=${vitalsInsight.isNotBlank()}]")
+        Log.d(TAG, "Parsed telemetry from ${cleanTokens.size} tokens: HR=$lastHr, SpO2=$lastSpo2, HRV=$lastHrv, Sleep=$sleepScore, Act=$activityScore, Stress=$stressScore, Steps=$liveSteps, Cal=$liveCalorie, Bat=$ringBattery, TempOffset=$skinTempOffset, TempBase=$skinTempBaseline, Insights=[Sleep=${sleepInsight.isNotBlank()}, Stress=${stressInsight.isNotBlank()}, Act=${activityInsight.isNotBlank()}, Vit=${vitalsInsight.isNotBlank()}]")
         return result
     }
 }

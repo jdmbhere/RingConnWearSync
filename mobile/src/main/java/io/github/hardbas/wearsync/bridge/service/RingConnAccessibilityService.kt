@@ -134,17 +134,6 @@ class RingConnAccessibilityService : AccessibilityService() {
         val currentVitals = RingConnTelemetryReader.readBestAvailableVitals(this)
         val parsedVitals = RingConnTelemetryParser.parseTokens(collectedTokens, currentVitals)
 
-        // Evidence for the one question that gates the override: which number did the scrape
-        // actually read? Logging only — parsing is untouched. Until this line shows the scraped
-        // HR is the freshest measurement rather than a resting rate or the day minimum,
-        // MeasuredVitalsPolicy.SCRAPE_OVERRIDE_ENABLED must stay false.
-        val hrEvidence = RingConnTelemetryParser.heartRateEvidence(collectedTokens, parsedVitals.lastHeartRate)
-        if (hrEvidence != null) {
-            Log.i(TAG, "Scrape HR evidence: HR=${parsedVitals.lastHeartRate} raw='${hrEvidence.token}' tokenIndex=${hrEvidence.index}/${collectedTokens.size} sampleAtSeconds=${parsedVitals.sampleAtSeconds}")
-        } else {
-            Log.i(TAG, "Scrape HR evidence: HR=${parsedVitals.lastHeartRate} raw=<no bpm token matched> sampleAtSeconds=${parsedVitals.sampleAtSeconds}")
-        }
-
         val hasMeaningfulData = parsedVitals.lastHeartRate > 0 ||
                 parsedVitals.sleepScore > 0 ||
                 (parsedVitals.sleepDeepMins + parsedVitals.sleepRemMins + parsedVitals.sleepLightMins) > 0 ||
