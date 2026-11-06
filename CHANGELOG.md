@@ -11,6 +11,8 @@ watch label is too long for the space its surface leaves.
 
 ## [Unreleased]
 
+## [1.9.42] - 2026-11-06
+
 ### Changed
 
 - **Sleep stages are aggregated from every nocturnal Health Connect session instead of estimated.**
