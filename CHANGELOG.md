@@ -11,6 +11,43 @@ watch label is too long for the space its surface leaves.
 
 ## [Unreleased]
 
+### Changed
+
+- **Sleep stages are aggregated from every nocturnal Health Connect session instead of estimated.**
+  RingConn does not write one session carrying a stages list; it writes 25-40 short
+  `SleepSessionRecord`s, one per stage interval, plus a coarse umbrella session, so the old reader
+  took its per-stage minutes, awake time and bedtime window from a single fragment and filled in
+  the rest. Every nocturnal session now feeds `SleepStageMerger` (30 s epochs, specificity wins),
+  the efficiency denominator is the span from bed time to the final awakening, and the merged night
+  was verified against the RingConn app's own sleep page: deep 107 vs 108 min, REM 60 vs 60,
+  light 245 vs 245, awake 20 vs 18, efficiency 92 vs 92.
+- **Skin temperature is the ring's per-night record.** The cached `40.0 °C` baseline was never
+  produced by the ring: it was a stale value kept alive by a guard that compared its ceiling
+  inclusively and by two parser regexes hand-carved to match it. Temperature now reads the
+  `SkinTemperatureRecord` Health Connect publishes per night, newest `lastModifiedTime` wins, and
+  shows the baseline and offset the RingConn app itself shows (35.92 °C, -0.2 °C overnight). The
+  guard ceiling is 38.0 °C, the regex carve-outs are gone, and `READ_BODY_TEMPERATURE` left the
+  manifest because nothing consumes it.
+- **A watch-triggered sync publishes once, not up to three times.** The watch's request persisted
+  a scrape, fired an unforced watch push plus a delayed Health Connect read, and then published a
+  forced sync of its own: one action, up to three publications, two Health Connect reads and an
+  extra wake lock. The scrape takes a `publishFollowUp` flag now, the watch-triggered caller opts
+  out while keeping the persistence, and the measured round trip fell from 0.64 s to 0.26 s.
+- **The accessibility scrape is an optional fallback, not a source.** Measured on device, the
+  scraped heart rate comes from no labelled `bpm` token and the RingConn UI exposes no parseable
+  clock token, so a scrape can never be timestamped and can never take precedence over the widget.
+  With the service disabled the published payload is identical field for field, and the app's own
+  source label has never credited the scrape. The scaffolding that instrumented the question,
+  including two tests that asserted on production source text, is removed; Glance widgets plus
+  Health Connect remain the authority.
+
+### Fixed
+
+- **The bridge stays alive across app updates, and the widget worker can be started without the
+  UI.** An in-place update takes the old process down with the widget host binding inside it; the
+  update path brings the bridge back, and the watch-message path pokes the widget worker directly
+  instead of depending on the app's screen. Pinned by `RingConnWidgetHostReaderTest`.
+
 ## [1.9.41] - 2026-11-03
 
 ### Changed
