@@ -103,7 +103,7 @@
     <string name="temp_insight_elevated">Temperatura cutánea elevada</string>
     <string name="temp_insight_cool">Temperatura cutánea baja</string>
     <string name="temp_delta_explanation_title">¿Qué significa ±0.0 °C?</string>
-    <string name="temp_delta_explanation_desc">La temperatura cutánea se mide como variación respecto a tu línea base circadiana (36.1 °C). ±0.0 °C indica 100% de estabilidad metabólica y un descanso reparador sin perturbaciones térmicas.</string>
+    <string name="temp_delta_explanation_desc">La temperatura cutánea se mide como variación respecto a tu línea base circadiana. ±0.0 °C indica 100% de estabilidad metabólica y un descanso reparador sin perturbaciones térmicas.</string>
     <string name="temp_thermoregulation_title">Bandas de Termorregulación</string>
     <string name="temp_thermoregulation_desc1">El anillo registra variaciones térmicas al dormir: ±0.5 °C es tu banda biológica óptima de eutermia.</string>
     <string name="temp_thermoregulation_desc2">Desviaciones significativas (> +0.5 °C) pueden asociarse a cenas tardías, alcohol, fatiga neuromuscular o fase lútea.</string>

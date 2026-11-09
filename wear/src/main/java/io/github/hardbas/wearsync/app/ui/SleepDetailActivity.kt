@@ -948,46 +948,48 @@ fun SleepDetailContent(
 
                         Spacer(modifier = Modifier.height(8.dp))
 
-                        Text(
-                            text = stringResource(R.string.bedtime_window),
-                            fontSize = TextCaption,
-                            color = LabelSilver
-                        )
+                        // The window is measured on the phone; a night without one has no row.
+                        if (vitals.bedtimeWindow.isNotBlank()) {
+                            Text(
+                                text = stringResource(R.string.bedtime_window),
+                                fontSize = TextCaption,
+                                color = LabelSilver
+                            )
 
-                        Spacer(modifier = Modifier.height(4.dp))
+                            Spacer(modifier = Modifier.height(4.dp))
 
-                        val bedtimeWindow = vitals.bedtimeWindow.ifBlank { "22:45 - 23:30" }
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(ShapePill)
-                                .background(SleepPeriwinkle.copy(alpha = 0.18f))
-                                .border(BorderStroke(1.dp, SleepPeriwinkle.copy(alpha = 0.55f)), ShapePill)
-                                .padding(horizontal = 12.dp, vertical = 5.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.Center
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(ShapePill)
+                                    .background(SleepPeriwinkle.copy(alpha = 0.18f))
+                                    .border(BorderStroke(1.dp, SleepPeriwinkle.copy(alpha = 0.55f)), ShapePill)
+                                    .padding(horizontal = 12.dp, vertical = 5.dp),
+                                contentAlignment = Alignment.Center
                             ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(6.dp)
-                                        .clip(CircleShape)
-                                        .background(SleepPeriwinkle)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = bedtimeWindow,
-                                    fontSize = TextBody,
-                                    style = TabularNums,
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold
-                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.Center
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(6.dp)
+                                            .clip(CircleShape)
+                                            .background(SleepPeriwinkle)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = vitals.bedtimeWindow,
+                                        fontSize = TextBody,
+                                        style = TabularNums,
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
                             }
-                        }
 
-                        Spacer(modifier = Modifier.height(8.dp))
+                            Spacer(modifier = Modifier.height(8.dp))
+                        }
 
                         val totalSleepMinutes = vitals.sleepDeepMins + vitals.sleepRemMins + vitals.sleepLightMins
                         val sleepBalanceMins = totalSleepMinutes - 480
@@ -1693,7 +1695,6 @@ private fun NocturnalDipGauge(
 private fun NocturnalTemperatureCard(vitals: RingConnVitals) {
     val offset = vitals.skinTempOffset
     val hasData = vitals.skinTempBaseline > 0f || vitals.skinTempOffset != 0f
-    val baseline = if (vitals.skinTempBaseline > 0f) vitals.skinTempBaseline else 36.1f
 
     val offsetStr = if (hasData) {
         when {
@@ -1847,7 +1848,7 @@ private fun NocturnalTemperatureCard(vitals: RingConnVitals) {
                         )
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = if (hasData) String.format(Locale.US, "%.1f °C", baseline) else "--",
+                            text = if (vitals.skinTempBaseline > 0f) String.format(Locale.US, "%.1f °C", vitals.skinTempBaseline) else "--",
                             fontSize = TextBody,
                             style = TabularNums,
                             color = Color.White,

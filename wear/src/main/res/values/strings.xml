@@ -102,7 +102,7 @@
     <string name="temp_insight_elevated">Elevated skin temperature</string>
     <string name="temp_insight_cool">Lower skin temperature</string>
     <string name="temp_delta_explanation_title">What does ±0.0 °C mean?</string>
-    <string name="temp_delta_explanation_desc">Skin temperature is measured as deviation from your personal circadian baseline (36.1 °C). ±0.0 °C indicates 100% metabolic stability and undisturbed restorative rest.</string>
+    <string name="temp_delta_explanation_desc">Skin temperature is measured as deviation from your personal circadian baseline. ±0.0 °C indicates 100% metabolic stability and undisturbed restorative rest.</string>
     <string name="temp_thermoregulation_title">Thermoregulation Bands</string>
     <string name="temp_thermoregulation_desc1">The ring tracks temperature fluctuations during sleep: ±0.5 °C is your optimal biological euthermia band.</string>
     <string name="temp_thermoregulation_desc2">Significant departures (> +0.5 °C) can indicate late food intake, alcohol, intense training, or early immune response.</string>

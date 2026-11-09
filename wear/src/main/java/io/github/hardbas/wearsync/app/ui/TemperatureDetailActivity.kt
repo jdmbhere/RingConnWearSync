@@ -140,7 +140,6 @@ fun TemperatureDetailContent(vitals: RingConnVitals) {
     )
     val offset = vitals.skinTempOffset
     val offsetToDisplay = if (hasData) animatedOffset.value else 0f
-    val baseline = if (vitals.skinTempBaseline > 0f) vitals.skinTempBaseline else 36.1f
     val offsetFormatted = if (hasData) {
         when {
             offsetToDisplay in -0.05f..0.05f -> "±0.0 °C"
@@ -378,7 +377,7 @@ fun TemperatureDetailContent(vitals: RingConnVitals) {
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
-                                text = if (vitals.skinTempBaseline > 0f) stringResource(R.string.temp_baseline_format, baseline) else "Baseline: --.- °C",
+                                text = if (vitals.skinTempBaseline > 0f) stringResource(R.string.temp_baseline_format, vitals.skinTempBaseline) else "Baseline: --.- °C",
                                 fontSize = TextLabel,
                                 style = TabularNums,
                                 color = LabelSilver,
