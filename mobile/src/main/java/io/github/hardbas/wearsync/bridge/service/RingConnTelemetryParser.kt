@@ -546,21 +546,24 @@ object RingConnTelemetryParser {
                         consumedIndices.add(nextIdx)
                     }
                 }
-                // Check for / targetCalorie
-                val candidateSlash = unconsumedTokenAt(i + 2)
+                // Check for / targetCalorie. The widget prints the unit between the amount and
+                // its goal ("288", "kcal", "/300"), so step over the unit before looking.
+                val unitIdx = i + 2
+                val slashIdx = if (unconsumedTokenAt(unitIdx)?.trim()?.lowercase() == "kcal") unitIdx + 1 else unitIdx
+                val candidateSlash = unconsumedTokenAt(slashIdx)
                 if (candidateSlash == "/") {
-                    unconsumedTokenAt(i + 3)?.replace(",", "")?.replace(".", "")?.trim()?.toIntOrNull()?.let {
+                    unconsumedTokenAt(slashIdx + 1)?.replace(",", "")?.replace(".", "")?.trim()?.toIntOrNull()?.let {
                         if (it in 100..10000) {
                             targetCalorie = it
-                            consumedIndices.add(i + 2)
-                            consumedIndices.add(i + 3)
+                            consumedIndices.add(slashIdx)
+                            consumedIndices.add(slashIdx + 1)
                         }
                     }
                 } else if (candidateSlash?.startsWith("/") == true) {
                     candidateSlash.removePrefix("/").replace(",", "").replace(".", "").trim().toIntOrNull()?.let {
                         if (it in 100..10000) {
                             targetCalorie = it
-                            consumedIndices.add(i + 2)
+                            consumedIndices.add(slashIdx)
                         }
                     }
                 }
