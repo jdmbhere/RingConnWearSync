@@ -11,6 +11,25 @@ watch label is too long for the space its surface leaves.
 
 ## [Unreleased]
 
+### Changed
+
+- **The README says how RingConn actually publishes to Health Connect.** Measured on RingConn
+  4.5.0: the official app writes only while its screen is open and focused, drains a backlog at
+  about one write per second, and stops when it loses focus. The Limits section now states that,
+  lists what goes stale meanwhile, and no longer describes an automatic launch of RingConn that
+  the bridge does not perform.
+
+### Fixed
+
+- **The calorie goal on the watch is the one RingConn shows.** The sport widget prints the unit
+  between the amount and its goal (`288`, `kcal`, `/300`); the parser looked for the goal right
+  after the amount, found the unit, and kept the cached goal. Pinned by `CalorieTargetParsingTest`.
+- **The watch no longer prints a bedtime window or a skin-temperature baseline nobody measured.**
+  The sleep coach showed `22:45 - 23:30` when the window was blank, and the temperature cards fell
+  back to 36.1 °C when only the offset had arrived. The bedtime row is now omitted, the baseline
+  reads `--`, and the explanation no longer quotes a fixed figure. Pinned by
+  `NoSyntheticBedtimeAndBaselineTest`.
+
 ## [1.9.42] - 2026-11-06
 
 ### Changed
