@@ -60,15 +60,25 @@ number the tile shows.
 
 Read this before opening an issue; most surprises live here.
 
-- **The sleep chain has three hops, and the first one is theirs.** `ring → RingConn app → Health
-  Connect (or its widget) → this app`. The ring only syncs to Health Connect while the official app
-  is running, so a night for which it was never opened simply is not there yet. Opening the app
-  once in the morning is what makes the last night appear. There is no other component with BLE
-  access to the ring.
-- **The bridge tries to do that opening for you, and fails safely.** It launches the official app,
-  waits up to 24 seconds for the sleep card, then returns home. It aborts if the app is not in
-  front after 6 seconds, which is what happens when the phone is locked: the keyguard owns the
-  screen and this app does not force itself over it.
+- **RingConn publishes to Health Connect only while its own screen is open and in front.** The
+  chain is `ring → RingConn app → Health Connect (or its widget) → this app`, and the second hop
+  is theirs. As of RingConn 4.5.0 the official app writes to Health Connect only while it is the
+  focused app on an unlocked phone. It then works through a backlog, oldest data first, at about
+  one write per second, and stops the moment you leave it, pull down the notification shade or
+  lock the phone. In the one run that was timed, three unpublished days took about six minutes, so
+  expect something like two minutes per day. A quick glance at the app never reaches today.
+- **Until that backlog is through, everything read from Health Connect is stale or empty.** That
+  is the heart-rate range and zones, heart rate per sleep stage, the lowest overnight SpO2, the
+  stress blocks, sleep stages, the bedtime window and skin temperature. What the widget carries
+  keeps arriving without opening anything: latest and average heart rate, SpO2 and HRV, the three
+  scores, steps, calories and ring battery.
+- **The bridge does not open RingConn for you, and nothing in the background stands in for it.**
+  RingConn's widget refresh and its own background tasks run all day without writing a record; a
+  launch with the screen off leaves the app stopped behind the lock screen; and its widgets offer
+  no action other than opening that screen. The only way found to publish without showing the app
+  is a hidden display created with ADB privileges, which an ordinary app cannot hold. So this is
+  a habit, not a setting: keep RingConn open for a minute or two at least once a day, and longer
+  after several days away. There is no other component with BLE access to the ring.
 - **Anything read from the widget lags by that widget's own refresh.** RingConn refreshes it every
   15–30 minutes, so sleep score, HRV, stress, ring battery and skin temperature can trail the
   official app by up to half an hour. Polling faster produces no fresher data, only battery drain,
@@ -81,10 +91,10 @@ Read this before opening an issue; most surprises live here.
 - **Two paths are untested on hardware.** The `GOAL_PROGRESS` complication needs API 33, and the
   app supports API 30; the theme fallback for Android 8 and 9 has never run on those devices.
 
-If a morning reading looks wrong, open the RingConn app with the phone unlocked, let it sync, and
-reopen the watch screen. Still wrong after that is worth an issue, and the in-app **Copy
-diagnostics** button gives you a report with the build, the device and what Health Connect actually
-returned.
+If a morning reading looks wrong, open the RingConn app with the phone unlocked, keep it in front
+for a minute or two, and reopen the watch screen. Still wrong after that is worth an issue, and the
+in-app **Copy diagnostics** button gives you a report with the build, the device and what Health
+Connect actually returned.
 
 ## How it works
 
