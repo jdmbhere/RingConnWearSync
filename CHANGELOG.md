@@ -21,6 +21,13 @@ watch label is too long for the space its surface leaves.
 
 ### Fixed
 
+- **Every published metric now comes from RingConn's own Health Connect records.** When the ring
+  had no row for resting heart rate, oxygen saturation, HRV, steps, sleep, total calories, the
+  overnight heart rate behind the sleep dip, or skin temperature, the reader published whatever
+  another app had written for that type — Google Fit's steps, a Polar strap's HRV — with nothing on
+  the watch saying whose number it was. A metric the ring did not write is now unknown, which is the
+  path the reader already took when Health Connect returned nothing for it. Pinned by
+  `HealthConnectOriginTest`.
 - **The calorie goal on the watch is the one RingConn shows.** The sport widget prints the unit
   between the amount and its goal (`288`, `kcal`, `/300`); the parser looked for the goal right
   after the amount, found the unit, and kept the cached goal. Pinned by `CalorieTargetParsingTest`.

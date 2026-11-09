@@ -217,7 +217,13 @@ object RingConnTelemetryReader {
                 recordType = SkinTemperatureRecord::class,
                 timeRange = TimeRangeFilter.between(start, end)
             )
-            val samples = records.mapNotNull { record ->
+            // The night must be the ring's. Another app's skin temperature is somebody else's
+            // baseline, and publishing it would be the same substitution the rest of this
+            // reader no longer performs.
+            val ringRecords = HealthConnectOrigin.ringConnRecords(records) {
+                it.metadata.dataOrigin.packageName == RINGCONN_PKG
+            }
+            val samples = ringRecords.mapNotNull { record ->
                 // One unreadable record must not hide the others.
                 try {
                     toSkinTemperatureSample(record)
@@ -228,7 +234,7 @@ object RingConnTelemetryReader {
             }
             val nightly = SkinTemperatureRecords.latestNightly(samples, ZoneId.systemDefault())
             if (nightly == null) {
-                Log.i(TAG, "Skin temperature: no published pair in ${SKIN_TEMPERATURE_LOOKBACK_DAYS}d (records=${records.size}), keeping the widget fallback")
+                Log.i(TAG, "Skin temperature: no published pair in ${SKIN_TEMPERATURE_LOOKBACK_DAYS}d (records=${ringRecords.size}), keeping the widget fallback")
                 return null
             }
 
@@ -510,12 +516,11 @@ object RingConnTelemetryReader {
             }
         }
 
-        // Resting Heart Rate (Prioritize RingConn origin)
+        // Resting Heart Rate (RingConn origin only)
         if (rhrResponse != null) {
-            val ringConnRhr = rhrResponse.records.filter {
+            val effectiveRhr = HealthConnectOrigin.ringConnRecords(rhrResponse.records) {
                 it.metadata.dataOrigin.packageName == RINGCONN_PKG
             }
-            val effectiveRhr = ringConnRhr.ifEmpty { rhrResponse.records }
             val latestRhr = effectiveRhr.maxByOrNull { it.time }
             if (latestRhr != null) {
                 restingBpm = latestRhr.beatsPerMinute.toInt()
@@ -523,14 +528,13 @@ object RingConnTelemetryReader {
             }
         }
 
-        // 2. Oxygen Saturation (SpO2 - Prioritize RingConn origin)
+        // 2. Oxygen Saturation (SpO2 - RingConn origin only)
         var lastSpo2 = 0
         var avgSpo2 = 0
         if (!spo2Response.isNullOrEmpty()) {
-            val ringConnSpo2 = spo2Response.filter {
+            val effectiveSpo2 = HealthConnectOrigin.ringConnRecords(spo2Response) {
                 it.metadata.dataOrigin.packageName == RINGCONN_PKG
             }
-            val effectiveSpo2 = ringConnSpo2.ifEmpty { spo2Response }
             val latestSpo2Record = effectiveSpo2.maxByOrNull { it.time }
             if (latestSpo2Record != null) {
                 val rawVal = latestSpo2Record.percentage.value
@@ -549,14 +553,13 @@ object RingConnTelemetryReader {
             }
         }
 
-        // 3. Heart Rate Variability (HRV RMSSD - Prioritize RingConn origin)
+        // 3. Heart Rate Variability (HRV RMSSD - RingConn origin only)
         var lastHrv = 0
         var avgHrv = 0
         if (hrvResponse != null) {
-            val ringConnHrv = hrvResponse.records.filter {
+            val effectiveHrv = HealthConnectOrigin.ringConnRecords(hrvResponse.records) {
                 it.metadata.dataOrigin.packageName == RINGCONN_PKG
             }
-            val effectiveHrv = ringConnHrv.ifEmpty { hrvResponse.records }
             val latestHrvRecord = effectiveHrv.maxByOrNull { it.time }
             if (latestHrvRecord != null) {
                 lastHrv = latestHrvRecord.heartRateVariabilityMillis.roundToInt()
@@ -571,15 +574,14 @@ object RingConnTelemetryReader {
             }
         }
 
-        // 4. Steps Today (Prioritize RingConn data origin)
+        // 4. Steps Today (RingConn data origin only)
         var todaySteps = 0
         var activeMinutes = 0
         if (stepsResponse != null) {
-            val ringConnSteps = stepsResponse.records.filter {
+            val effectiveSteps = HealthConnectOrigin.ringConnRecords(stepsResponse.records) {
                 it.metadata.dataOrigin.packageName == RINGCONN_PKG
             }
-            val effectiveSteps = ringConnSteps.ifEmpty { stepsResponse.records }
-            if (ringConnSteps.isNotEmpty()) {
+            if (effectiveSteps.isNotEmpty()) {
                 hasRingConnOrigin = true
             }
             if (effectiveSteps.isNotEmpty()) {
@@ -601,14 +603,12 @@ object RingConnTelemetryReader {
         // 5. Total Calories Burned Today
         var todayCalories = 0
         if (calResponse != null) {
-            val ringConnCal = calResponse.records.filter {
+            val ringConnCal = HealthConnectOrigin.ringConnRecords(calResponse.records) {
                 it.metadata.dataOrigin.packageName == RINGCONN_PKG
             }
-            todayCalories = if (ringConnCal.isNotEmpty()) {
+            if (ringConnCal.isNotEmpty()) {
                 hasRingConnOrigin = true
-                ringConnCal.sumOf { it.energy.inKilocalories }.roundToInt()
-            } else {
-                calResponse.records.sumOf { it.energy.inKilocalories }.roundToInt()
+                todayCalories = ringConnCal.sumOf { it.energy.inKilocalories }.roundToInt()
             }
         }
 
@@ -639,9 +639,9 @@ object RingConnTelemetryReader {
         var nocturnalSessions: List<SleepSessionRecord> = emptyList()
         var nocturnalLatestEnd: Instant? = null
         if (sleepResponse != null) {
-            val ringConnSleeps = sleepResponse.records.filter {
+            val ringConnSleeps = HealthConnectOrigin.ringConnRecords(sleepResponse.records) {
                 it.metadata.dataOrigin.packageName == RINGCONN_PKG
-            }.ifEmpty { sleepResponse.records }
+            }
 
                 // Only consider sleep sessions concluding today (endTime >= todayStart)
                 val todaySleeps = ringConnSleeps.filter { it.endTime >= todayStart }
@@ -861,10 +861,9 @@ object RingConnTelemetryReader {
 
         // --- Physiological Biomarkers Calculation (AHISpo2Data, CalSleepHeartRateData, SleepNapModel, BedScheduleModel, StandSyncModel) ---
         // 1. Sleep Sessions (SleepNapModel & BedScheduleModel)
-        val allSleepRecords = if (sleepResponse != null) {
-            val ringSleep = sleepResponse.records.filter { it.metadata.dataOrigin.packageName == RINGCONN_PKG }
-            ringSleep.ifEmpty { sleepResponse.records }
-        } else emptyList()
+        val allSleepRecords = HealthConnectOrigin.ringConnRecords(sleepResponse?.records) {
+            it.metadata.dataOrigin.packageName == RINGCONN_PKG
+        }
 
         val longSleepSessions = allSleepRecords.filter {
             Duration.between(it.startTime, it.endTime).toMinutes() >= 180L
@@ -907,10 +906,9 @@ object RingConnTelemetryReader {
         val finalBedtimeWindow = computedBedtimeWindow.ifBlank { existing.bedtimeWindow }
 
         // 2. Nocturnal SpO2 & Apnea ODI (AHISpo2Data) — only when sleep concluded today
-        val effectiveSpo2Records = if (!spo2Response.isNullOrEmpty()) {
-            val ringSpo2 = spo2Response.filter { it.metadata.dataOrigin.packageName == RINGCONN_PKG }
-            ringSpo2.ifEmpty { spo2Response }
-        } else emptyList()
+        val effectiveSpo2Records = HealthConnectOrigin.ringConnRecords(spo2Response) {
+            it.metadata.dataOrigin.packageName == RINGCONN_PKG
+        }
 
         val hasTodaySleep = nocturnalStart != null || finalSleep > 0 || (finalDeep + finalRem + finalLight) > 0
         val nocturnalSpo2Records = if (nocturnalStart != null && nocturnalEnd != null) {
@@ -948,10 +946,9 @@ object RingConnTelemetryReader {
 
         // 3. Nocturnal Heart Rate Dip (CalSleepHeartRateData) — only when sleep concluded today
         var computedSleepingHrDipPct = 0.0f
-        val effectiveHrRecords = if (!hrResponse.isNullOrEmpty()) {
-            val ringHr = hrResponse.filter { it.metadata.dataOrigin.packageName == RINGCONN_PKG }
-            ringHr.ifEmpty { hrResponse }
-        } else emptyList()
+        val effectiveHrRecords = HealthConnectOrigin.ringConnRecords(hrResponse) {
+            it.metadata.dataOrigin.packageName == RINGCONN_PKG
+        }
 
         val allHrSamples = effectiveHrRecords.flatMap { it.samples }
         if (nocturnalStart != null && nocturnalEnd != null && allHrSamples.isNotEmpty()) {
@@ -989,8 +986,9 @@ object RingConnTelemetryReader {
         // 4. Stand Hours (StandSyncModel)
         var computedStandHours = 0
         if (stepsResponse != null) {
-            val ringSteps = stepsResponse.records.filter { it.metadata.dataOrigin.packageName == RINGCONN_PKG }
-            val effectiveSteps = ringSteps.ifEmpty { stepsResponse.records }
+            val effectiveSteps = HealthConnectOrigin.ringConnRecords(stepsResponse.records) {
+                it.metadata.dataOrigin.packageName == RINGCONN_PKG
+            }
             val distinctHours = effectiveSteps.filter { it.count >= 25L && it.startTime >= todayStart }
                 .map { it.startTime.atZone(localZone).hour }
                 .distinct()

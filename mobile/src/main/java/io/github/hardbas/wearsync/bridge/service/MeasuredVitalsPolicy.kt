@@ -122,5 +122,5 @@ object MeasuredVitalsPolicy {
      * it as unknown.
      */
     fun <T> ringSamples(records: List<T>, isRingOrigin: (T) -> Boolean): List<T> =
-        records.filter(isRingOrigin)
+        HealthConnectOrigin.ringConnRecords(records, isRingOrigin)
 }
