@@ -11,6 +11,8 @@ watch label is too long for the space its surface leaves.
 
 ## [Unreleased]
 
+## [1.9.43] - 2026-11-09
+
 ### Changed
 
 - **The README says how RingConn actually publishes to Health Connect.** Measured on RingConn
